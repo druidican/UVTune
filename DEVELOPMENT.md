@@ -52,7 +52,7 @@ environment variable), so the GUI can read them and write commands back.
 | File | What it does |
 |---|---|
 | `worker.py` | Main loop, command handling, run lifecycle, running one step, crash recovery, report and shutdown at the end. |
-| `search.py` | The search algorithm as a small, pure state machine (`Search`). No I/O, so it is easy to test. |
+| `search.py` | The search algorithms as small, pure state machines: `Search` (automatic) and `ManualSearch` (manual list, with `parse_manual`). `from_dict` picks the right one from the saved state. No I/O, so they are easy to test. |
 | `gpu.py` | sysfs access: sensors (hwmon), voltage offset (`pp_od_clk_voltage`), power limit (`power1_cap`). `FakeGpu` for simulation. |
 | `comfy.py` | Starts/stops the test ComfyUI, submits workflows over the HTTP API, fetches the result image. Seed alternation (`seed_variants`). `FakeComfy` for simulation. |
 | `workflows.py` | The built-in workflow (standard nodes only), presets in `uvtune/workflows/`, checkpoint listing, and `resolve()` which picks the workflow from the settings. |
@@ -107,7 +107,7 @@ Default location: `~/.local/share/uvtune/` (override with `UVTUNE_DATA`).
 
 `status` is `pass`, `fail` or `aborted`. `reason` is one of `mismatch`, `gpu_reset`,
 `timeout`, `comfyui_error` or `freeze`. `phase` is one of `baseline`, `warmup`, `coarse`,
-`up`, `fine`, `confirm` or `verify`.
+`up`, `fine`, `confirm`, `verify` or `manual`.
 
 **A sample line** (keys depend on what hwmon exposes, see `AmdGpu._scan_sensors`):
 

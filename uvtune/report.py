@@ -15,7 +15,7 @@ REASONS = {"mismatch": "Wrong image (calculation error)", "gpu_reset": "GPU rese
            "freeze": "Freeze or reboot"}
 PHASES = {"baseline": "Reference", "warmup": "Warm-up", "coarse": "Screening (coarse)",
           "up": "Screening (up)", "fine": "Screening (fine)", "confirm": "Confirmation",
-          "verify": "Verification"}
+          "verify": "Verification", "manual": "Manual test"}
 STATUS = {"finished": "Finished", "aborted": "Aborted", "error": "Stopped with an error"}
 COLORS = {"most_uv": "#8e44ad", "least": "#27ae60", "fastest": "#e67e22"}
 
@@ -219,6 +219,14 @@ Fan: {num(p['avg_fan_rpm'])} rpm {pct(delta(p['avg_fan_rpm'], base['avg_fan_rpm'
             h.append(svg_bars(reco))
 
     caps = (st.get("search") or {}).get("cap_results") or []
+    if caps and (st.get("search") or {}).get("kind") == "manual":
+        h.append("<h2>Result per setting</h2><table><tr><th>Power limit</th><th>Requested</th>"
+                 "<th>Stable at</th><th>Note</th></tr>")
+        for c in caps:
+            h.append(f"<tr><td>{num(c['cap_w'])} W</td><td>{num(c.get('requested_mv'), ' mV')}</td>"
+                     f"<td>{num(c.get('offset_mv'), ' mV')}</td><td>{e(c.get('note'))}</td></tr>")
+        h.append("</table>")
+        caps = []
     if caps:
         h.append("<h2>Result per power limit</h2><table><tr><th>Power limit</th><th>Screening limit</th>"
                  "<th>Confirmed</th><th>Verified (with margin)</th><th>Note</th></tr>")
@@ -266,7 +274,8 @@ Fan: {num(p['avg_fan_rpm'])} rpm {pct(delta(p['avg_fan_rpm'], base['avg_fan_rpm'
         h.append("<h2>Test settings</h2><table>")
         for k in ("power_caps_pct", "coarse_step_mv", "fine_step_mv", "min_offset_mv", "safety_margin_mv",
                   "warmup_minutes", "screen_minutes", "confirm_minutes", "verify_minutes",
-                  "perf_tolerance_pct", "comfy_command"):
+                  "perf_tolerance_pct", "test_mode", "manual_list", "manual_minutes", "load_type",
+                  "comfy_command", "torch_python"):
             if k in cfg:
                 h.append(f"<tr><th>{e(k)}</th><td>{e(cfg[k])}</td></tr>")
         h.append("</table>")

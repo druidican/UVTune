@@ -19,7 +19,7 @@ PICKS = [
 def recommend(steps, cfg):
     tol = float(cfg.get("perf_tolerance_pct", 2.0)) / 100
     base = next((s for s in steps if s.get("phase") == "baseline" and s.get("status") == "pass"), None)
-    verified = [s for s in steps if s.get("phase") == "verify" and s.get("status") == "pass"
+    verified = [s for s in steps if s.get("phase") in ("verify", "manual") and s.get("status") == "pass"
                 and s.get("img_per_hour")]
     out = {"baseline": base, "verified": verified, "most_uv": None, "least": None,
            "fastest": None, "least_within_tol": False}

@@ -34,6 +34,11 @@ DEFAULTS = {
     # so testing goes from 100 % downwards.
     "power_caps_pct": "100, 90, 85, 80",
 
+    # "auto" = automatic search, "manual" = test the settings in manual_list
+    "test_mode": "auto",
+    "manual_list": "",        # one setting per line: watts and mV, e.g. "254 -80"
+    "manual_minutes": 60,     # test time per setting in manual mode
+
     # Search for the lowest stable voltage
     "coarse_step_mv": 25,
     "fine_step_mv": 5,

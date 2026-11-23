@@ -22,7 +22,7 @@ from .imagecmp import decode, ext, fmt_psnr, pixel_hash, psnr
 from .torchbackend import FakeTorch, TorchBackend
 from . import report
 from .reco import recommend
-from .search import Search
+from .search import ManualSearch, Search, from_dict, parse_manual
 from .system import Watchdog, boot_id, open_system
 
 FAKE = bool(os.environ.get("UVTUNE_FAKE"))
@@ -30,10 +30,10 @@ FAKE = bool(os.environ.get("UVTUNE_FAKE"))
 
 PHASE_MINUTES = {"baseline": "warmup_minutes", "warmup": "warmup_minutes",
                  "coarse": "screen_minutes", "up": "screen_minutes", "fine": "screen_minutes",
-                 "confirm": "confirm_minutes", "verify": "verify_minutes"}
+                 "confirm": "confirm_minutes", "verify": "verify_minutes", "manual": "manual_minutes"}
 PHASE_NAMES = {"baseline": "Reference + warm-up", "warmup": "Warm-up",
                "coarse": "Screening (coarse)", "up": "Screening (up)", "fine": "Screening (fine)",
-               "confirm": "Confirmation", "verify": "Verification"}
+               "confirm": "Confirmation", "verify": "Verification", "manual": "Manual test"}
 
 
 class Abort(Exception):
@@ -239,6 +239,25 @@ class Worker:
                         "(or amdgpu.ppfeaturemask=0xffffffff) and reboot.")
         pi = self.gpu.power_info()
         default = pi["default_w"] or pi["cap_w"]
+        floor = int(cfg["min_offset_mv"])
+        if od.get("vo_min") is not None:
+            floor = max(floor, od["vo_min"])
+        if cfg.get("test_mode") == "manual":
+            items, errors = parse_manual(cfg.get("manual_list"))
+            if errors:
+                return fail("Manual list: " + "; ".join(errors))
+            if not items:
+                return fail("The manual list is empty. Add one setting per line, e.g. 254 -80")
+            for it in items:
+                if (pi["min_w"] and it["cap_w"] < pi["min_w"]) or (pi["max_w"] and it["cap_w"] > pi["max_w"]):
+                    return fail(f"{it['cap_w']} W is outside the card's range "
+                                f"({pi['min_w']}–{pi['max_w']} W)")
+                if it["offset_mv"] < floor:
+                    return fail(f"{it['offset_mv']} mV is below the lowest allowed offset ({floor} mV)")
+            search = ManualSearch.new(items, cfg, round(default))
+            desc = ", ".join(f"{it['cap_w']} W / {it['offset_mv']} mV" for it in items)
+            return self._start_run(st, run_dir, wf, cfg, pi, od, default, search,
+                                   f"New manual test started: {desc}.")
         caps = []
         try:
             pcts = parse_caps(cfg["power_caps_pct"])
@@ -255,20 +274,21 @@ class Worker:
                 caps.append(w)
         if not caps:
             return fail("No power limits to test")
-        floor = int(cfg["min_offset_mv"])
-        if od.get("vo_min") is not None:
-            floor = max(floor, od["vo_min"])
+        return self._start_run(st, run_dir, wf, cfg, pi, od, default, Search.new(caps, cfg, floor),
+                               f"New test started. Power limits: {', '.join(f'{c} W' for c in caps)}. "
+                               f"Lowest offset: {floor} mV.")
+
+    def _start_run(self, st, run_dir, wf, cfg, pi, od, default, search, message):
         S.write_json(run_dir / "workflow.json", wf)
         st.update({
             "active": True, "status": "between", "message": "",
             "default_power_w": default, "power_info": pi, "od_info": od, "gpu_name": self.gpu.name,
-            "search": Search.new(caps, cfg, floor).to_dict(), "step_n": 0,
+            "search": search.to_dict(), "step_n": 0,
             "consecutive_crashes": 0, "ref": None, "current": None,
         })
         self.prepared = False
         self.save(st)
-        self.event(st, "info", f"New test started. Power limits: {', '.join(f'{c} W' for c in caps)}. "
-                               f"Lowest offset: {floor} mV.")
+        self.event(st, "info", message)
         return st
 
     # ---------- preparation per boot ----------
@@ -350,7 +370,7 @@ class Worker:
         if st.get("total_crashes", 0) >= int(cfg.get("max_total_crashes", 40)):
             self.finish(st, "error", "The test hit the overall limit for crashes and was stopped.")
             return
-        search = Search(st["search"])
+        search = from_dict(st["search"])
         if search.done:
             if search.d.get("error"):
                 self.finish(st, "error", search.d["error"])
@@ -603,7 +623,7 @@ class Worker:
     def _finish_step(self, st, result, passed):
         run_dir = S.Path(st["run_dir"])
         S.append_jsonl(run_dir / "steps.jsonl", result, sync=True)
-        search = Search(st["search"])
+        search = from_dict(st["search"])
         phase = result["phase"]
         if phase == "warmup":
             if passed:

@@ -18,13 +18,14 @@ from .config import DEFAULTS, merged, parse_caps
 from .imagecmp import fmt_psnr
 from . import amdsmi, report, scan, workflows
 from .reco import PICKS, delta, recommend
+from .search import parse_manual
 
 REASONS = {"mismatch": "Wrong image (calculation error)", "gpu_reset": "GPU reset / driver error",
            "timeout": "Hang (timeout)", "comfyui_error": "Test load error",
            "freeze": "Freeze or reboot"}
 PHASES = {"baseline": "Reference", "warmup": "Warm-up", "coarse": "Screening (coarse)",
           "up": "Screening (up)", "fine": "Screening (fine)", "confirm": "Confirmation",
-          "verify": "Verification"}
+          "verify": "Verification", "manual": "Manual test"}
 STATUS = {"between": "Running", "running": "Running", "rebooting": "Rebooting",
           "finished": "Finished", "aborted": "Aborted", "error": "Error"}
 
@@ -101,8 +102,9 @@ def run_checks(cfg):
         if pi["default_w"]:
             caps = parse_caps(cfg["power_caps_pct"])
             ws = ", ".join(f"{p:g} % = {round(pi['default_w'] * p / 100)} W" for p in caps)
+            plan = "" if cfg.get("test_mode") == "manual" else f" Testing: {ws}"
             out.append(("ok", f"Power limit default {pi['default_w']} W "
-                              f"(min {pi['min_w']}, max {pi['max_w']}). Testing: {ws}"))
+                              f"(min {pi['min_w']}, max {pi['max_w']}).{plan}"))
     except Exception as e:  # noqa: BLE001
         out.append(("err", f"Could not read the graphics card: {e}"))
 
@@ -163,12 +165,26 @@ def run_checks(cfg):
                                 "Close it before starting."))
         except Exception:  # noqa: BLE001
             pass
+    if cfg.get("test_mode") == "manual":
+        items, errors = parse_manual(cfg.get("manual_list"))
+        for err in errors:
+            out.append(("err", f"Manual list: {err}"))
+        if not items and not errors:
+            out.append(("err", "The manual list is empty. Add one setting per line, e.g. 254 -80"))
+        elif items:
+            out.append(("ok", "Manual test: " + ", ".join(f"{i['cap_w']} W / {i['offset_mv']} mV"
+                                                            for i in items)
+                        + f", {cfg.get('manual_minutes')} min each"))
     out.append(("warn", "Close your normal ComfyUI, other GPU programs (such as Ollama) and games before "
                         "starting, so they do not use the GPU at the same time. Pausing cloud sync tools is a good idea."))
     return out
 
 
 def estimate_hours(cfg):
+    if cfg.get("test_mode") == "manual":
+        n = max(1, len(parse_manual(cfg.get("manual_list"))[0]))
+        m = float(cfg.get("manual_minutes") or 0)
+        return (cfg["warmup_minutes"] + n * m) / 60, (cfg["warmup_minutes"] * 2 + n * m * 2) / 60
     n = max(1, len(parse_caps(cfg["power_caps_pct"])))
     sm, cm, vm = cfg["screen_minutes"], cfg["confirm_minutes"], cfg["verify_minutes"]
     lo = cfg["warmup_minutes"] + n * (4 * sm + cm + vm)
@@ -245,8 +261,13 @@ def remote_view():
         if st.get("run_id"):
             idx = min(sd.get("cap_idx", 0) + 1, len(caps)) if caps else 0
             started = st.get("created")
-            overall.set_text(f"Run {st['run_id']} · power limit {idx} of {len(caps)}"
-                             + (f" ({caps[idx - 1]} W)" if caps and idx else "")
+            if sd.get("kind") == "manual":
+                items = sd.get("items") or []
+                i = min(sd.get("idx", 0) + 1, len(items))
+                where = f"setting {i} of {len(items)}" if sd.get("phase") != "baseline" else "reference"
+            else:
+                where = f"power limit {idx} of {len(caps)}" + (f" ({caps[idx - 1]} W)" if caps and idx else "")
+            overall.set_text(f"Run {st['run_id']} · {where}"
                              + f" · step {st.get('step_n', 0)}"
                              + (f" · running for {fmt_dur(time.time() - started)}" if started and st.get("active") else ""))
         else:
@@ -523,25 +544,48 @@ def index(request: Request):
 
                     with ui.card().classes("w-[30rem]"):
                         ui.label("Test plan").classes("text-h6")
-                        ui.input("Power limits in % of default (comma-separated)") \
-                            .bind_value(cfg, "power_caps_pct").classes("w-full")
-                        with ui.grid(columns=2).classes("w-full"):
-                            ui.number("Coarse steps (mV)", min=5, max=100).bind_value(cfg, "coarse_step_mv")
-                            ui.number("Fine steps (mV)", min=1, max=25).bind_value(cfg, "fine_step_mv")
-                            ui.number("Lowest offset (mV)", max=0).bind_value(cfg, "min_offset_mv")
-                            ui.number("Safety margin (mV)", min=0, max=50).bind_value(cfg, "safety_margin_mv")
-                            ui.number("Warm-up (min)", min=1).bind_value(cfg, "warmup_minutes")
-                            ui.number("Screening per step (min)", min=0.5, step=0.5) \
-                                .bind_value(cfg, "screen_minutes")
-                            ui.number("Confirmation (min)", min=1).bind_value(cfg, "confirm_minutes")
-                            ui.number("Verification (min)", min=1).bind_value(cfg, "verify_minutes")
-                            ui.number("Allowed performance loss (%)", min=0, max=20, step=0.5) \
-                                .bind_value(cfg, "perf_tolerance_pct")
+                        if cfg.get("test_mode") not in ("auto", "manual"):
+                            cfg["test_mode"] = "auto"
+                        ui.toggle({"auto": "Automatic search", "manual": "Manual list"}) \
+                            .bind_value(cfg, "test_mode")
+                        with ui.column().classes("w-full") as auto_box:
+                            ui.input("Power limits in % of default (comma-separated)") \
+                                .bind_value(cfg, "power_caps_pct").classes("w-full")
+                            with ui.grid(columns=2).classes("w-full"):
+                                ui.number("Coarse steps (mV)", min=5, max=100).bind_value(cfg, "coarse_step_mv")
+                                ui.number("Fine steps (mV)", min=1, max=25).bind_value(cfg, "fine_step_mv")
+                                ui.number("Lowest offset (mV)", max=0).bind_value(cfg, "min_offset_mv")
+                                ui.number("Safety margin (mV)", min=0, max=50).bind_value(cfg, "safety_margin_mv")
+                                ui.number("Warm-up (min)", min=1).bind_value(cfg, "warmup_minutes")
+                                ui.number("Screening per step (min)", min=0.5, step=0.5) \
+                                    .bind_value(cfg, "screen_minutes")
+                                ui.number("Confirmation (min)", min=1).bind_value(cfg, "confirm_minutes")
+                                ui.number("Verification (min)", min=1).bind_value(cfg, "verify_minutes")
+                        auto_box.bind_visibility_from(cfg, "test_mode", value="auto")
+                        with ui.column().classes("w-full") as manual_box:
+                            ui.textarea("Settings to test: one per line, watts and mV",
+                                        placeholder="254 -80\n254 -75\n269 -75") \
+                                .bind_value(cfg, "manual_list").classes("w-full").props("autogrow")
+                            with ui.grid(columns=2).classes("w-full"):
+                                ui.number("Minutes per setting", min=1).bind_value(cfg, "manual_minutes")
+                                ui.number("Step up after a failure (mV)", min=1, max=25) \
+                                    .bind_value(cfg, "fine_step_mv")
+                                ui.number("Warm-up / reference (min)", min=1).bind_value(cfg, "warmup_minutes")
+                            ui.label("Each setting is tested for the full time. If it fails, it is tested "
+                                     "again a step closer to 0 mV until it holds. The reference at stock "
+                                     "runs first.").classes("text-caption")
+                        manual_box.bind_visibility_from(cfg, "test_mode", value="manual")
+                        ui.number("Allowed performance loss (%)", min=0, max=20, step=0.5) \
+                            .bind_value(cfg, "perf_tolerance_pct").classes("w-56")
+
+                        def est_text():
+                            keys = (("warmup_minutes", "manual_minutes") if cfg.get("test_mode") == "manual"
+                                    else ("warmup_minutes", "screen_minutes", "confirm_minutes", "verify_minutes"))
+                            if not all(cfg.get(k) for k in keys):
+                                return ""
+                            return "Expected duration: about {:.1f}–{:.1f} hours".format(*estimate_hours(cfg))
                         est = ui.label().classes("text-caption")
-                        ui.timer(1.0, lambda: est.set_text(
-                            "Expected duration: about {:.1f}–{:.1f} hours".format(*estimate_hours(cfg))
-                            if all(cfg.get(k) for k in ("warmup_minutes", "screen_minutes", "confirm_minutes",
-                                                         "verify_minutes")) else ""))
+                        ui.timer(1.0, lambda: est.set_text(est_text()))
 
                         ui.label("Safety").classes("text-h6 q-mt-md")
                         ui.switch("Reboot the machine after a GPU reset (recommended)") \

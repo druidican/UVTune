@@ -150,3 +150,102 @@ class Search:
             return
         d.update(phase="coarse", offset=max(d["floor"], d["start_next"]), last_good=None,
                  first_fail=None, confirmed=None)
+
+
+def parse_manual(text):
+    """Parse the manual test list: one setting per line (or separated by ';'),
+    each as watts and mV, e.g. "254 -80", "254W / -80mV". Returns (items, errors)."""
+    import re
+    items, errors = [], []
+    for raw in re.split(r"[\n;]+", str(text or "")):
+        entry = raw.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        nums = re.findall(r"-?\d+(?:\.\d+)?", entry)
+        if len(nums) != 2:
+            errors.append(f"'{entry}': write watts and mV, e.g. 254 -80")
+            continue
+        watts, mv = float(nums[0]), int(round(float(nums[1])))
+        if watts <= 0:
+            errors.append(f"'{entry}': the power limit must be above 0 W")
+        elif mv > 0:
+            errors.append(f"'{entry}': the voltage offset must be 0 or negative (e.g. -80)")
+        else:
+            items.append({"cap_w": round(watts), "offset_mv": mv})
+    return items, errors
+
+
+class ManualSearch:
+    """Manual mode: test a list of (power limit, offset) settings, each for manual_minutes.
+    If a setting fails, it is retried fine_step_mv closer to 0 until one holds."""
+
+    def __init__(self, d):
+        self.d = d
+
+    @classmethod
+    def new(cls, items, cfg, default_w):
+        return cls({
+            "kind": "manual", "items": items, "idx": 0, "phase": "baseline",
+            "base_cap": default_w, "offset": 0, "fine": abs(int(cfg["fine_step_mv"])),
+            "cap_results": [], "error": None,
+        })
+
+    def to_dict(self):
+        return self.d
+
+    @property
+    def done(self):
+        return self.d["phase"] == "done"
+
+    def current(self):
+        d = self.d
+        if self.done:
+            return None
+        if d["phase"] == "baseline":
+            return {"cap_w": d["base_cap"], "offset_mv": 0, "phase": "baseline"}
+        return {"cap_w": d["items"][d["idx"]]["cap_w"], "offset_mv": d["offset"], "phase": "manual"}
+
+    def record(self, passed):
+        d = self.d
+        if d["phase"] == "baseline":
+            if not passed:
+                d["error"] = "Stock settings were not stable. The test is stopped."
+                d["phase"] = "done"
+                return
+            self._start_item()
+            return
+        item = d["items"][d["idx"]]
+        if passed:
+            note = "Stable as requested" if d["offset"] == item["offset_mv"] else \
+                f"Stable after stepping up from {item['offset_mv']} mV"
+            self._result(d["offset"], note)
+            self._next_item()
+            return
+        nxt = d["offset"] + d["fine"]
+        if nxt > 0:
+            self._result(None, "Failed even at 0 mV")
+            self._next_item()
+        else:
+            d["offset"] = nxt
+
+    def _result(self, offset, note):
+        item = self.d["items"][self.d["idx"]]
+        self.d["cap_results"].append({"cap_w": item["cap_w"], "requested_mv": item["offset_mv"],
+                                      "offset_mv": offset, "note": note})
+
+    def _start_item(self):
+        d = self.d
+        d["phase"] = "manual"
+        d["offset"] = d["items"][d["idx"]]["offset_mv"]
+
+    def _next_item(self):
+        d = self.d
+        d["idx"] += 1
+        if d["idx"] >= len(d["items"]):
+            d["phase"] = "done"
+        else:
+            self._start_item()
+
+
+def from_dict(d):
+    return ManualSearch(d) if d.get("kind") == "manual" else Search(d)

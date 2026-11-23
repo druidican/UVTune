@@ -41,6 +41,22 @@ expose a voltage offset (`OD_VDDGFX_OFFSET`) through amdgpu overdrive.
    2. *Least negative impact:* the lowest power draw where performance is at most 2 % below stock.
    3. *Best positive impact:* the highest performance.
 
+### Manual list
+
+Want to test specific settings instead? Choose **Manual list** under *Test plan* and enter
+one setting per line, as watts and mV:
+
+```
+254 -80
+254 -75
+269 -75
+```
+
+After the reference at stock, each setting is tested for the chosen time (default 60 minutes).
+If a setting fails, it is tested again 5 mV closer to 0 until it holds, so you always find
+out the nearest stable value. The report lists each setting with what was requested and
+where it turned out stable, and the three picks and charts work as usual.
+
 A step fails if any of these happens:
 
 - **Wrong image / wrong result:** the result differs from the reference. The GPU calculated
