@@ -1,4 +1,4 @@
-"""Filbaseret lager. Alt skrives atomisk og fsync'es, så data overlever et frys."""
+"""File-based storage. Everything is written atomically and fsync'ed, so data survives a freeze."""
 import json
 import os
 import pwd
@@ -91,7 +91,7 @@ def read_jsonl(path, tail=None):
         try:
             out.append(json.loads(ln))
         except ValueError:
-            pass  # halv linje efter et frys
+            pass  # half-written line after a freeze
     return out
 
 

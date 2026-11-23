@@ -87,7 +87,7 @@ Default location: `~/.local/share/uvtune/` (override with `UVTUNE_DATA`).
 | `runs/<run_id>/samples_NNN.jsonl` | Worker | Sensor samples for step NNN, one per second. |
 | `runs/<run_id>/images/` | Worker | `reference.png`, `reference_1.png` (one per seed) and `stepNNN_bad.png` for failures. |
 | `runs/<run_id>/kernel_stepNNN.log` | Worker | Kernel log lines for GPU failures and freezes. |
-| `runs/<run_id>/rapport.html`, `trin.csv` | Worker / GUI | The report. |
+| `runs/<run_id>/report.html`, `steps.csv` | Worker / GUI | The report. |
 
 **A line in `steps.jsonl`** (fields from `worker.py` → `_result` and `step_stats`):
 
@@ -257,10 +257,10 @@ with the `vo <mV>` and `c` commands on `pp_od_clk_voltage`, which RDNA3 and RDNA
 support. Older generations use different overdrive commands (voltage curve points), so you
 would extend `set_voltage_offset` and `parse_od`.
 
-**Translate the interface:** user-facing text is in Danish and is written directly in the
-code: mainly `gui.py`, `report.py`, `reco.py` (pick names) and the event messages in
-`worker.py`. There is no translation layer yet. Adding one, for example a dictionary per
-language selected by a setting, would be a welcome contribution.
+**Translate the interface:** user-facing text is in English and is written directly in the
+code: mainly `gui.py`, `report.py`, `reco.py` (pick names), `search.py` (result notes) and the
+event messages in `worker.py`. There is no translation layer yet. Adding one, for example a
+dictionary per language selected by a setting, would be a welcome contribution.
 
 ## Ground rules
 
@@ -287,7 +287,7 @@ Before opening a pull request or pushing a release, check at least:
 - [ ] `python -m pyflakes uvtune` reports nothing.
 - [ ] A full simulated run with 2 power limits finishes and produces a report.
 - [ ] Killing the worker mid-step (with a changed `boot_id`) records a freeze and continues.
-- [ ] *Afbryd test* during a step resets the (fake) card and ends the run.
+- [ ] **Abort test** during a step resets the (fake) card and ends the run.
 - [ ] The shutdown countdown can be cancelled.
 - [ ] The remote page (opened from a non-loopback address) has no buttons.
 - [ ] `bash -n install.sh uninstall.sh` passes.

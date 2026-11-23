@@ -1,8 +1,8 @@
-"""UV Tune worker. Kører som root via systemd og overlever genstarter.
+"""UV Tune worker. Runs as root via systemd and survives reboots.
 
-Før hvert trin gemmes "nu tester jeg trin X" på disken. Hvis maskinen fryser eller
-genstarter, ser workeren ved næste boot, at trin X ikke blev færdigt, og noterer det
-som ustabilt. Overdrive-indstillinger nulstilles altid af kernen ved genstart.
+Before each step, "now testing step X" is saved to disk. If the machine freezes or
+reboots, the worker sees at the next boot that step X did not finish, and records it
+as unstable. The kernel always resets overdrive settings on reboot.
 """
 import math
 import os
@@ -30,9 +30,9 @@ FAKE = bool(os.environ.get("UVTUNE_FAKE"))
 PHASE_MINUTES = {"baseline": "warmup_minutes", "warmup": "warmup_minutes",
                  "coarse": "screen_minutes", "up": "screen_minutes", "fine": "screen_minutes",
                  "confirm": "confirm_minutes", "verify": "verify_minutes"}
-PHASE_NAMES = {"baseline": "Reference + opvarmning", "warmup": "Opvarmning",
-               "coarse": "Screening (grov)", "up": "Screening (op)", "fine": "Screening (fin)",
-               "confirm": "Bekræftelse", "verify": "Verifikation"}
+PHASE_NAMES = {"baseline": "Reference + warm-up", "warmup": "Warm-up",
+               "coarse": "Screening (coarse)", "up": "Screening (up)", "fine": "Screening (fine)",
+               "confirm": "Confirmation", "verify": "Verification"}
 
 
 class Abort(Exception):
@@ -40,7 +40,7 @@ class Abort(Exception):
 
 
 class Terminate(BaseException):
-    """Tjenesten stoppes (systemctl stop, afinstallation eller nedlukning)."""
+    """The service is being stopped (systemctl stop, uninstall or shutdown)."""
 
 
 def _on_sigterm(signum, frame):
@@ -48,7 +48,7 @@ def _on_sigterm(signum, frame):
 
 
 def call_timeout(fn, secs):
-    """Kør fn i en tråd. Returnerer None ved succes, fejltekst, eller 'timeout'."""
+    """Run fn in a thread. Returns None on success, an error text, or 'timeout'."""
     res = {}
 
     def run():
@@ -127,7 +127,7 @@ class Worker:
         self._errors = 0
         threading.Thread(target=self._heartbeat, daemon=True).start()
 
-    # ---------- hjælpere ----------
+    # ---------- helpers ----------
     def _heartbeat(self):
         while True:
             try:
@@ -162,11 +162,11 @@ class Worker:
             return
         if cmd.get("action") == "abort":
             raise Abort()
-        self.event(st, "warn", "En test kører allerede. Startkommandoen blev ignoreret.")
+        self.event(st, "warn", "A test is already running. The start command was ignored.")
 
-    # ---------- hovedløkke ----------
+    # ---------- main loop ----------
     def loop(self):
-        self.event(None, "info", f"Worker startet ({'SIMULERING' if FAKE else self.gpu.name})")
+        self.event(None, "info", f"Worker started ({'SIMULATION' if FAKE else self.gpu.name})")
         try:
             self._loop()
         except Terminate:
@@ -184,26 +184,26 @@ class Worker:
                     try:
                         self.continue_run(st)
                     except Abort:
-                        self.finish(st, "aborted", "Afbrudt af brugeren")
+                        self.finish(st, "aborted", "Aborted by the user")
                     self._errors = 0
                 else:
                     time.sleep(1)
             except Exception as e:  # noqa: BLE001
                 self._errors += 1
-                self.event(st, "error", f"Intern fejl: {e}", trace=traceback.format_exc())
+                self.event(st, "error", f"Internal error: {e}", trace=traceback.format_exc())
                 if st.get("active") and self._errors >= 3:
-                    self.finish(st, "error", f"Stoppet efter gentagne interne fejl: {e}")
+                    self.finish(st, "error", f"Stopped after repeated internal errors: {e}")
                 time.sleep(5)
 
     def handle_command(self, cmd, st):
         action = cmd.get("action")
         if action == "start":
             if st.get("active"):
-                self.event(st, "warn", "En test kører allerede.")
+                self.event(st, "warn", "A test is already running.")
                 return st
             return self.new_run(cmd)
         if action == "abort" and st.get("active"):
-            self.finish(st, "aborted", "Afbrudt af brugeren")
+            self.finish(st, "aborted", "Aborted by the user")
             return S.read_json(S.STATE) or {}
         return st
 
@@ -224,18 +224,18 @@ class Worker:
         if err:
             return fail(err)
         if os.geteuid() != 0 and not FAKE:
-            return fail("Workeren kører ikke som root og kan ikke ændre kortets indstillinger.")
+            return fail("The worker is not running as root and cannot change the card's settings.")
         od = self.gpu.od_info()
         if not od["vo_supported"]:
-            return fail("Kortet viser ingen OD_VDDGFX_OFFSET. Slå overclocking til i LACT "
-                        "(eller amdgpu.ppfeaturemask=0xffffffff) og genstart.")
+            return fail("The card shows no OD_VDDGFX_OFFSET. Enable overclocking in LACT "
+                        "(or amdgpu.ppfeaturemask=0xffffffff) and reboot.")
         pi = self.gpu.power_info()
         default = pi["default_w"] or pi["cap_w"]
         caps = []
         try:
             pcts = parse_caps(cfg["power_caps_pct"])
         except ValueError:
-            return fail("Power limits skal skrives som procenttal adskilt af komma, fx 100, 90, 80")
+            return fail("Power limits must be percentages separated by commas, e.g. 100, 90, 80")
         for p in pcts:
             w = default * p / 100
             if pi["min_w"]:
@@ -246,7 +246,7 @@ class Worker:
             if w not in caps:
                 caps.append(w)
         if not caps:
-            return fail("Ingen power limits at teste")
+            return fail("No power limits to test")
         floor = int(cfg["min_offset_mv"])
         if od.get("vo_min") is not None:
             floor = max(floor, od["vo_min"])
@@ -259,17 +259,17 @@ class Worker:
         })
         self.prepared = False
         self.save(st)
-        self.event(st, "info", f"Ny test startet. Power limits: {', '.join(f'{c} W' for c in caps)}. "
-                               f"Laveste offset: {floor} mV.")
+        self.event(st, "info", f"New test started. Power limits: {', '.join(f'{c} W' for c in caps)}. "
+                               f"Lowest offset: {floor} mV.")
         return st
 
-    # ---------- forberedelse pr. boot ----------
+    # ---------- preparation per boot ----------
     def prepare(self, st):
         cfg = st["cfg"]
         if cfg["stop_lactd"] and self.sys.lactd_active():
             self.sys.stop_lactd()
             st["lactd_was_active"] = True
-            self.event(st, "info", "LACT-tjenesten er sat på pause under testen.")
+            self.event(st, "info", "The LACT service is paused during the test.")
         if cfg["auto_reboot_on_freeze"] and not FAKE:
             if "sysctl_saved" not in st:
                 st["sysctl_saved"] = {k: self.sys.read_sysctl(k)
@@ -288,7 +288,7 @@ class Worker:
             cmd = cfg["comfy_command"]
             if "--cache-none" in cmd.split():
                 cfg = dict(cfg, comfy_command=" ".join(x for x in cmd.split() if x != "--cache-none"))
-                self.event(st, "info", "Kører ComfyUI uden --cache-none, så modellerne bliver i hukommelsen.")
+                self.event(st, "info", "Running ComfyUI without --cache-none, so the models stay in memory.")
         else:
             self.variants, self.must_run = [self.workflow], None
             self.event(st, "warn", desc)
@@ -308,33 +308,33 @@ class Worker:
                 if st["status"] == "running":
                     self.record_hard_crash(st)
                 else:
-                    self.event(st, "info", "Maskinen er genstartet efter en GPU-fejl. Fortsætter.")
+                    self.event(st, "info", "The machine rebooted after a GPU error. Continuing.")
                 st["status"] = "between"
                 st["needs_warmup"] = True
                 self.save(st)
                 self.grace(st)
             elif st.get("status") == "running":
-                self.event(st, "warn", "Workeren blev genstartet midt i et trin. Trinnet køres forfra.")
+                self.event(st, "warn", "The worker restarted in the middle of a step. The step is run again.")
                 st["status"] = "between"
                 st["step_n"] = max(0, st.get("step_n", 1) - 1)
             self.prepare(st)
         if st.get("consecutive_crashes", 0) >= int(cfg["max_consecutive_crashes"]):
-            self.finish(st, "error", "Den samme indstilling crashede igen og igen. "
-                                     "Testen er stoppet for en sikkerheds skyld.")
+            self.finish(st, "error", "The same setting crashed again and again. "
+                                     "The test was stopped to be safe.")
             return
         if st.get("total_crashes", 0) >= int(cfg.get("max_total_crashes", 40)):
-            self.finish(st, "error", "Testen har ramt det samlede loft for antal crashes og er stoppet.")
+            self.finish(st, "error", "The test hit the overall limit for crashes and was stopped.")
             return
         search = Search(st["search"])
         if search.done:
             if search.d.get("error"):
                 self.finish(st, "error", search.d["error"])
             else:
-                self.finish(st, "finished", "Testen er færdig.")
+                self.finish(st, "finished", "The test is finished.")
             return
         step = search.current()
         if st.get("needs_warmup") and (st.get("ref") or {}).get("mode"):
-            # kortet er koldt efter genstart: varm op på standard spænding først
+            # the card is cold after a reboot: warm up at stock voltage first
             self.run_step(st, {"cap_w": step["cap_w"], "offset_mv": 0, "phase": "warmup"})
             return
         self.run_step(st, step)
@@ -343,14 +343,14 @@ class Worker:
         secs = int(st["cfg"]["boot_grace_s"])
         st["grace_until"] = time.time() + secs
         self.save(st)
-        self.event(st, "info", f"Venter {secs} s, før testen fortsætter (du kan afbryde i appen).")
+        self.event(st, "info", f"Waiting {secs} s before the test continues (you can abort in the app).")
         end = time.time() + secs
         while time.time() < end:
             self.check_abort(st)
             time.sleep(1)
         st.pop("grace_until", None)
 
-    # ---------- et trin ----------
+    # ---------- one step ----------
     def _poll(self, st, t0):
         self.check_abort(st)
         now = time.time()
@@ -378,13 +378,13 @@ class Worker:
         minutes = float(cfg[PHASE_MINUTES[phase]])
         dur_s = minutes * 60
         names = PHASE_NAMES
-        self.event(st, "info", f"Trin {n}: {names[phase]} – {cap} W, {off} mV, {minutes:g} min")
+        self.event(st, "info", f"Step {n}: {names[phase]} – {cap} W, {off} mV, {minutes:g} min")
 
         err = self._apply(cap, off)
         if err:
             if err == "timeout":
-                return self._gpu_dead(st, n, step, "Kortet svarede ikke, da indstillingerne blev sat")
-            self.finish(st, "error", f"Kunne ikke sætte indstillinger: {err}")
+                return self._gpu_dead(st, n, step, "The card did not respond when the settings were applied")
+            self.finish(st, "error", f"Could not apply settings: {err}")
             return
 
         samples_file = run_dir / f"samples_{n:03d}.jsonl"
@@ -434,7 +434,7 @@ class Worker:
                 ok, p = self._check_image(st, n, phase, data, vi)
                 cur["images"] += 1
                 if fresh:
-                    # første billede efter (gen)start indlæser modellerne: tæller ikke i ydelsen
+                    # the first image after a (re)start loads the models: not counted in performance
                     cur["cold_img_s"] = round(secs, 2)
                     cur["warm_from"] = time.time()
                     fresh = False
@@ -444,8 +444,8 @@ class Worker:
                 cur["last_img_s"] = round(secs, 2)
                 self.save(st)
                 if not ok:
-                    fail = ("mismatch", f"Billedet afveg fra referencen ({fmt_psnr(p)}). "
-                                        "Det tyder på regnefejl i GPU'en.")
+                    fail = ("mismatch", f"The image differed from the reference ({fmt_psnr(p)}). "
+                                        "This points to calculation errors in the GPU.")
                     break
                 hits = self.sys.gpu_errors_since(t0)
                 if hits:
@@ -475,22 +475,22 @@ class Worker:
         if fail[0] != "mismatch":
             self._count_crash(st, step)
         if fail[0] in ("gpu_reset", "timeout") and cfg["reboot_on_gpu_reset"] and not FAKE:
-            self._reboot(st, "GPU-fejl. Genstarter for at få en ren driver")
+            self._reboot(st, "GPU error. Rebooting to get a clean driver")
             return
         if fail[0] != "mismatch":
-            # efter en driver- eller ComfyUI-fejl startes ComfyUI forfra; efter et forkert
-            # billede er driveren i orden, så modellerne bliver liggende
+            # after a driver or ComfyUI error, ComfyUI is restarted; after a wrong
+            # image the driver is fine, so the models stay loaded
             call_timeout(self.comfy.stop, 30)
         if call_timeout(self.gpu.reset_od, 30) == "timeout":
             if not FAKE:
-                self._reboot(st, "Kortet svarer ikke efter fejlen. Genstarter")
+                self._reboot(st, "The card is not responding after the error. Rebooting")
                 return
         st["status"] = "between"
         self.save(st)
 
     def _count_crash(self, st, step):
-        """Tæller crashes. Kun gentagne crashes på samme indstilling er en crash-løkke;
-        crashes mens testen bevæger sig mod sikrere indstillinger er forventede."""
+        """Counts crashes. Only repeated crashes on the same setting are a crash loop;
+        crashes while the test moves towards safer settings are expected."""
         key = f"{step['phase']}|{step['cap_w']}|{step['offset_mv']}"
         if st.get("last_crash_key") == key:
             st["consecutive_crashes"] = st.get("consecutive_crashes", 0) + 1
@@ -526,7 +526,7 @@ class Worker:
         key = str(vi)
         if key not in refs:
             if phase != "baseline":
-                raise RuntimeError("Mangler referencebillede for seed-variant " + key)
+                raise RuntimeError("Missing reference image for seed variant " + key)
             name = "reference.png" if vi == 0 else f"reference_{vi}.png"
             S.write_bytes(img_dir / name, data)
             refs[key] = {"hash": pixel_hash(arr), "file": str(img_dir / name)}
@@ -577,8 +577,8 @@ class Worker:
                 st["needs_warmup"] = False
             st["current"] = None
             self.event(st, "info" if passed else "warn",
-                       "Opvarmning færdig" if passed else
-                       f"Opvarmning fejlede ({result.get('reason')}) – prøver igen",
+                       "Warm-up finished" if passed else
+                       f"Warm-up failed ({result.get('reason')}) – trying again",
                        step=result["n"], detail=result.get("detail"))
             self.save(st)
             return
@@ -587,24 +587,24 @@ class Worker:
             ps = ref.get("baseline_psnrs", [])
             if all(p == math.inf for p in ps):
                 ref["mode"], ref["threshold"] = "exact", None
-                note = "Billederne er bit-identiske. Enhver afvigelse tæller som fejl."
+                note = "The images are bit-identical. Any difference counts as a failure."
             else:
                 ref["mode"] = "psnr"
                 ref["threshold"] = round(max(20.0, min(ps) - 3.0), 2)
-                note = (f"Billederne varierer lidt selv på standard (laveste {min(ps):.1f} dB). "
-                        f"Grænse for fejl: under {ref['threshold']} dB.")
+                note = (f"The images vary slightly even at stock (lowest {min(ps):.1f} dB). "
+                        f"Failure threshold: below {ref['threshold']} dB.")
             ref["sec_per_img"] = result.get("sec_per_img")
             self.event(st, "info", note)
         search.record(passed)
         if phase == "baseline" and not passed and result.get("reason") == "mismatch":
-            search.d["error"] = ("Workflowet giver meget forskellige billeder hver gang. "
-                                 "Tjek at seed er sat til 'fixed'.")
+            search.d["error"] = ("The workflow gives very different images every time. "
+                                 "Check that the seed is set to 'fixed'.")
         st["search"] = search.to_dict()
         st["current"] = None
         lvl = "info" if passed else "warn"
-        txt = "bestået" if passed else f"FEJLET ({result.get('reason')})"
-        self.event(st, lvl, f"Trin {result['n']} {txt}: {result['cap_w']} W, {result['offset_mv']} mV"
-                            + (f", {result['img_per_hour']} billeder/t, {result['avg_power_w']} W"
+        txt = "passed" if passed else f"FAILED ({result.get('reason')})"
+        self.event(st, lvl, f"Step {result['n']} {txt}: {result['cap_w']} W, {result['offset_mv']} mV"
+                            + (f", {result['img_per_hour']} images/h, {result['avg_power_w']} W"
                                if result.get("img_per_hour") else ""),
                    step=result["n"], detail=result.get("detail"))
         self.save(st)
@@ -616,12 +616,12 @@ class Worker:
         run_dir = S.Path(st["run_dir"])
         hits, tail = self.sys.previous_boot_log()
         log = run_dir / f"kernel_step{cur['n']:03d}.log"
-        S.write_text(log, "GPU-relaterede linjer:\n" + "\n".join(hits) +
-                     "\n\nSidste linjer før genstart:\n" + "\n".join(tail))
+        S.write_text(log, "GPU-related lines:\n" + "\n".join(hits) +
+                     "\n\nLast lines before the reboot:\n" + "\n".join(tail))
         samples = S.read_jsonl(cur.get("samples_file", ""))
         step = {k: cur[k] for k in ("phase", "cap_w", "offset_mv")}
         r = {"n": cur["n"], **step, "status": "fail", "reason": "freeze",
-             "detail": "Maskinen frøs eller genstartede under trinnet."
+             "detail": "The machine froze or rebooted during the step."
                        + ("\n\n" + "\n".join(hits[:15]) if hits else ""),
              "started": cur.get("started"), "duration_s": None,
              "images": cur.get("images", 0), "kernel_log": str(log), "min_psnr": None}
@@ -629,9 +629,9 @@ class Worker:
         self._count_crash(st, step)
         self._finish_step(st, r, False)
 
-    # ---------- afslutning ----------
+    # ---------- finishing ----------
     def release(self, st, restart_lactd=True):
-        """Sæt kortet og systemet tilbage til normal."""
+        """Set the card and the system back to normal."""
         call_timeout(lambda: (self.gpu.reset_od(), self.gpu.reset_power_cap()), 30)
         if self.comfy:
             call_timeout(self.comfy.stop, 30)
@@ -646,24 +646,24 @@ class Worker:
 
     def terminate(self):
         st = S.read_json(S.STATE) or {}
-        if self.watchdog:  # altid først, så maskinen ikke genstarter uventet
+        if self.watchdog:  # always first, so the machine does not reboot unexpectedly
             self.watchdog.stop()
             self.watchdog = None
         if not st.get("active"):
             return
         if st.get("status") == "rebooting":
-            return  # vores egen genstart efter en GPU-fejl
+            return  # our own reboot after a GPU error
         if self.sys.system_stopping():
-            # Maskinen lukkes ned/genstartes af brugeren: nulstil kortet, men lad testen
-            # fortsætte efter næste boot med samme trin forfra.
+            # The user is shutting down/rebooting: reset the card, but let the test
+            # continue after the next boot, redoing the same step.
             self.release(st, restart_lactd=False)
             if st.get("status") == "running":
                 st["step_n"] = max(0, st.get("step_n", 1) - 1)
             st.update(status="between", current=None, needs_warmup=True)
             self.save(st)
-            self.event(st, "warn", "Maskinen lukkes ned. Testen fortsætter efter næste opstart.")
+            self.event(st, "warn", "The machine is shutting down. The test continues after the next startup.")
         else:
-            self.finish(st, "aborted", "Stoppet fordi worker-tjenesten blev stoppet.")
+            self.finish(st, "aborted", "Stopped because the worker service was stopped.")
 
     def finish(self, st, status, message):
         self.release(st)
@@ -681,45 +681,45 @@ class Worker:
         self.comfy = None
         self.save(st)
         self.event(st, "info" if status == "finished" else "warn",
-                   f"{message} Kortet er sat tilbage til standard.")
+                   f"{message} The card has been set back to stock.")
         cfg = st.get("cfg") or {}
         if cfg.get("auto_report", True):
             try:
                 path = report.save(st["run_dir"], cfg.get("report_dir"), st)
                 st["report_path"] = str(path)
                 self.save(st)
-                self.event(st, "info", f"Rapport gemt: {path}")
+                self.event(st, "info", f"Report saved: {path}")
             except Exception as ex:  # noqa: BLE001
                 try:
                     path = report.save(st["run_dir"], None, st)
                     st["report_path"] = str(path)
                     self.save(st)
-                    self.event(st, "error", f"Kunne ikke gemme rapporten i {cfg.get('report_dir')} ({ex}). "
-                                            f"Den ligger i stedet her: {path}")
+                    self.event(st, "error", f"Could not save the report in {cfg.get('report_dir')} ({ex}). "
+                                            f"It is saved here instead: {path}")
                 except Exception as ex2:  # noqa: BLE001
-                    self.event(st, "error", f"Kunne ikke skrive rapporten: {ex2}")
+                    self.event(st, "error", f"Could not write the report: {ex2}")
         if status in ("finished", "error") and cfg.get("shutdown_when_finished"):
             self.shutdown_countdown(st, int(cfg.get("shutdown_delay_s", 60)))
 
     def shutdown_countdown(self, st, delay):
-        """Sluk computeren efter testen, med mulighed for at annullere i appen."""
+        """Power off the computer after the test, with an option to cancel in the app."""
         st["shutdown_at"] = time.time() + delay
         self.save(st)
-        self.event(st, "warn", f"Computeren slukkes om {delay} sekunder. Tryk 'Annullér nedlukning' "
-                               "i appen for at stoppe det.")
+        self.event(st, "warn", f"The computer will power off in {delay} seconds. Click 'Cancel shutdown' "
+                               "in the app to stop it.")
         end = time.time() + delay
         while time.time() < end:
             cmd = self._read_command()
             if cmd and cmd.get("action") == "abort":
                 st.pop("shutdown_at", None)
                 self.save(st)
-                self.event(st, "info", "Nedlukning annulleret.")
+                self.event(st, "info", "Shutdown cancelled.")
                 return
             time.sleep(1)
         st.pop("shutdown_at", None)
         st["shut_down_at"] = time.time()
         self.save(st)
-        self.event(st, "warn", "Slukker computeren nu.")
+        self.event(st, "warn", "Powering off the computer now.")
         self.sys.poweroff()
 
 
@@ -730,11 +730,11 @@ def main():
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print("En anden UV Tune-worker kører allerede.", file=sys.stderr)
+        print("Another UV Tune worker is already running.", file=sys.stderr)
         sys.exit(1)
     signal.signal(signal.SIGTERM, _on_sigterm)
     if os.geteuid() != 0 and not FAKE:
-        print("Advarsel: workeren skal køre som root (via systemd) for at kunne ændre kortet.",
+        print("Warning: the worker must run as root (via systemd) to be able to change the card.",
               file=sys.stderr)
     Worker().loop()
 

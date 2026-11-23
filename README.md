@@ -7,11 +7,10 @@ through driver crashes, freezes and reboots.
 
 Goals: **lower power draw**, **unchanged or better performance**, **stability and less fan noise**.
 
-Developed and tested on an RX 9070 XT (RDNA4) with Ubuntu 26.10 and ROCm 10.2. It should
-work on other AMD cards that expose a voltage offset (`OD_VDDGFX_OFFSET`) through amdgpu
-overdrive.
+**Tested on Ubuntu 26.04 with ROCm 10.2.0** and an RX 9070 XT (RDNA4). It should also work on
+other Linux distributions with the `amdgpu` driver and systemd, and on other AMD cards that
+expose a voltage offset (`OD_VDDGFX_OFFSET`) through amdgpu overdrive.
 
-> **Note:** the app's user interface is currently in Danish.
 > Want to modify UVTune yourself? See [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## How it works
@@ -47,12 +46,16 @@ itself with the next, safer step. The kernel always resets the card to stock on 
 
 ## Requirements
 
-- Linux with the `amdgpu` driver and systemd (tested on Ubuntu)
+- Linux with the `amdgpu` driver and systemd (tested on Ubuntu 26.04; other distributions should work)
 - An AMD card with voltage offset support in overdrive
-- ComfyUI with a working ROCm/PyTorch setup
+- ComfyUI with a working ROCm/PyTorch setup (tested with ROCm 10.2.0)
 - Python 3.10 or newer
 - Optional: [LACT](https://github.com/ilya-zlobintsev/LACT) to apply the result afterwards
 - Optional: `amd-smi` (comes with ROCm) for the *GPU (amd-smi)* tab
+
+The install script uses `apt` to install `python3-venv` and `python3-pip`. On a distribution
+without `apt`, install those two packages (or your distribution's equivalent) yourself first,
+then run the script; it skips the `apt` step when `apt-get` is not available.
 
 ## Before you install
 
@@ -87,24 +90,24 @@ sudo ./install.sh          # add --remote if you use remote viewing
 1. **Setup tab:** upload your workflow file, and check the ComfyUI folder and start command.
    The command should contain `--listen 127.0.0.1 --port 8189`. The test starts its own
    ComfyUI instance on that port.
-2. Click **Tjek system** (check system) and fix anything marked red.
+2. Click **Check system** and fix anything marked red.
 3. Close your normal ComfyUI, other GPU programs (such as Ollama) and games. Pausing cloud
    sync tools during the test is a good idea.
-4. Click **Start test**. The **Live** tab shows graphs, and **Resultater** (results) shows the
-   table, charts and recommendations.
+4. Click **Start test**. The **Live** tab shows graphs, and **Results** shows the table,
+   charts and recommendations.
 5. When the test is finished, the card is set back to stock. Enter the recommended power
    limit and voltage offset in LACT.
 
 ## Report and shutdown
 
 - **Report:** when the test ends, a report is saved in the folder you choose in Setup
-  (default `~/Documents/UV Tune`, or `~/Dokumenter/UV Tune` on a Danish system). It consists
+  (default `~/Documents/UV Tune`). It consists
   of an HTML file that opens in any browser without internet, and a CSV file with all
-  measurements (for LibreOffice Calc, for example). Under **Resultater** you can also save or
+  measurements (for LibreOffice Calc, for example). Under **Results** you can also save or
   download the report for an earlier run.
 - **Shut down when finished:** the report is saved first. Then there is a 60-second countdown
-  before the computer powers off. The countdown can be cancelled with the *Annullér
-  nedlukning* (cancel shutdown) button in the app on the test machine. The computer also
+  before the computer powers off. The countdown can be cancelled with the **Cancel shutdown**
+  button in the app on the test machine. The computer also
   shuts down if the test stops by itself because of an error, but not if you abort it yourself.
 
 ## Remote viewing from another computer
@@ -132,8 +135,8 @@ another computer, you will see ComfyUI, not UVTune. Keep the test ComfyUI listen
 ## Good to know
 
 - **Stopping and continuing:** if you shut down or reboot during a test, it continues
-  automatically after the next startup and redoes the interrupted step. Clicking *Afbryd test*
-  (abort) ends the run for good and writes a report of what was tested so far.
+  automatically after the next startup and redoes the interrupted step. Clicking **Abort test**
+  ends the run for good and writes a report of what was tested so far.
 - **Watchdog (optional):** if the machine freezes completely, the motherboard's hardware
   watchdog reboots it after about a minute. Without the watchdog you have to press reset
   yourself, and then the test continues.

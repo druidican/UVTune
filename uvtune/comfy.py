@@ -1,4 +1,4 @@
-"""Styrer en ComfyUI-testinstans og kører workflowet via dens API."""
+"""Controls a ComfyUI test instance and runs the workflow through its API."""
 import copy
 import io
 import json
@@ -32,17 +32,17 @@ class WaitInterrupted(Exception):
 
 
 def validate_workflow(wf):
-    """Returnerer fejltekst eller None."""
+    """Returns an error text or None."""
     if not isinstance(wf, dict):
-        return "Workflow-filen er ikke et JSON-objekt."
+        return "The workflow file is not a JSON object."
     if "nodes" in wf and "links" in wf:
-        return ("Filen er i det almindelige UI-format. Brug 'Export (API)' i ComfyUI "
-                "og vælg den fil i stedet.")
+        return ("The file is in the normal UI format. Use 'Export (API)' in ComfyUI "
+                "and choose that file instead.")
     if not wf or not all(isinstance(v, dict) and "class_type" in v for v in wf.values()):
-        return "Filen ligner ikke et ComfyUI API-workflow."
+        return "The file does not look like a ComfyUI API workflow."
     classes = {v["class_type"] for v in wf.values()}
     if not any("Save" in c or "Preview" in c for c in classes):
-        return "Workflowet har ingen Save Image- eller Preview Image-node."
+        return "The workflow has no Save Image or Preview Image node."
     return None
 
 
@@ -54,11 +54,11 @@ def _is_link(v):
 
 
 def seed_variants(wf):
-    """Lav to udgaver af workflowet med hver sin seed (A og B).
+    """Make two versions of the workflow, each with its own seed (A and B).
 
-    ComfyUI gemmer kun det seneste resultat pr. node, så når testen skifter A, B, A, B,
-    må sampleren regne hvert billede forfra, mens modellerne bliver liggende i hukommelsen.
-    Returnerer (wf_a, wf_b, sampler_node, beskrivelse) eller (None, None, None, årsag).
+    ComfyUI only keeps the latest result per node, so when the test alternates A, B, A, B,
+    the sampler has to calculate every image from scratch while the models stay in memory.
+    Returns (wf_a, wf_b, sampler_node, description) or (None, None, None, reason).
     """
     consumers = {}
     for nid, node in wf.items():
@@ -104,15 +104,15 @@ def seed_variants(wf):
                 nid, key, val = target
                 b = copy.deepcopy(wf)
                 b[nid]["inputs"][key] = val + 1 if val < 2 ** 63 - 2 else val - 1
-                desc = (f"Testen skifter mellem seed {val} og {b[nid]['inputs'][key]} "
-                        f"(node {nid}, {wf[nid].get('class_type')}), så modellerne bliver i hukommelsen.")
+                desc = (f"The test alternates between seed {val} and {b[nid]['inputs'][key]} "
+                        f"(node {nid}, {wf[nid].get('class_type')}), so the models stay in memory.")
                 return wf, b, sid, desc
-    return None, None, None, ("Fandt ingen fast seed, der kan skiftes. Tilføj --cache-none til "
-                              "startkommandoen (langsommere: alle modeller genindlæses pr. billede).")
+    return None, None, None, ("Found no fixed seed that can be alternated. Add --cache-none to "
+                              "the start command (slower: all models are reloaded for every image).")
 
 
 def _pick_image(entry, workflow):
-    """Vælg altid det samme billede: helst fra en Save-node, ellers laveste node-id."""
+    """Always pick the same image: preferably from a Save node, otherwise the lowest node id."""
     outs = [(nid, o) for nid, o in entry.get("outputs", {}).items() if o.get("images")]
 
     def rank(item):
@@ -156,7 +156,7 @@ class ComfyServer:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self):
-        """Starter ComfyUI hvis nødvendigt. Returnerer True hvis en ny proces blev startet."""
+        """Starts ComfyUI if needed. Returns True if a new process was started."""
         if self.alive() and self.api_ok():
             return False
         self.stop()
@@ -165,20 +165,20 @@ class ComfyServer:
             cmd = ["runuser", "-l", self.user, "-c", inner]
         else:
             cmd = ["bash", "-c", inner]
-        self.log("info", "Starter ComfyUI-testinstans")
+        self.log("info", "Starting ComfyUI test instance")
         logf = open(self.log_path, "ab")
         self.proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, start_new_session=True)
         deadline = time.time() + float(self.cfg["comfy_startup_timeout_s"])
         while time.time() < deadline:
             if self.proc.poll() is not None:
-                raise ComfyError(f"ComfyUI stoppede under opstart (kode {self.proc.returncode}). "
-                                 f"Se {self.log_path}")
+                raise ComfyError(f"ComfyUI stopped during startup (code {self.proc.returncode}). "
+                                 f"See {self.log_path}")
             if self.api_ok():
-                self.log("info", "ComfyUI er klar")
+                self.log("info", "ComfyUI is ready")
                 return True
             time.sleep(2)
-        raise ComfyError("ComfyUI blev ikke klar i tide")
+        raise ComfyError("ComfyUI did not become ready in time")
 
     def stop(self):
         if self.proc is None:
@@ -193,28 +193,28 @@ class ComfyServer:
                 pass
         self.proc = None
 
-    # --- kør et billede ---
+    # --- run one image ---
     def run_once(self, workflow, timeout, poll_cb, must_run=None):
         cid = uuid.uuid4().hex
         try:
             resp = self._json("/prompt", {"prompt": workflow, "client_id": cid})
         except urllib.error.HTTPError as e:
-            raise ComfyError(f"ComfyUI afviste workflowet: {e.read()[:800].decode(errors='replace')}")
+            raise ComfyError(f"ComfyUI rejected the workflow: {e.read()[:800].decode(errors='replace')}")
         except Exception as e:
-            raise ComfyError(f"Kunne ikke sende workflow: {e}")
+            raise ComfyError(f"Could not send workflow: {e}")
         pid = resp.get("prompt_id")
         if resp.get("node_errors"):
-            raise ComfyError(f"Node-fejl: {json.dumps(resp['node_errors'])[:800]}")
+            raise ComfyError(f"Node errors: {json.dumps(resp['node_errors'])[:800]}")
         t0 = time.time()
         while True:
             time.sleep(1)
             if not self.alive():
-                raise ComfyError("ComfyUI-processen døde under kørsel")
+                raise ComfyError("The ComfyUI process died while running")
             r = poll_cb()
             if r:
                 raise WaitInterrupted(*r)
             if time.time() - t0 > timeout:
-                raise ComfyTimeout(f"Billedet blev ikke færdigt inden for {int(timeout)} s")
+                raise ComfyTimeout(f"The image did not finish within {int(timeout)} s")
             try:
                 hist = self._json(f"/history/{pid}", timeout=10)
             except Exception:
@@ -226,7 +226,7 @@ class ComfyServer:
             if status.get("status_str") == "error":
                 msgs = [m for m in status.get("messages", []) if m and m[0] == "execution_error"]
                 detail = msgs[0][1].get("exception_message", "") if msgs else ""
-                raise ComfyError(f"Fejl under generering: {detail}".strip())
+                raise ComfyError(f"Error during generation: {detail}".strip())
             if status.get("completed") or entry.get("outputs"):
                 break
         elapsed = time.time() - t0
@@ -235,18 +235,18 @@ class ComfyServer:
             if m and m[0] == "execution_cached":
                 cached.update(str(n) for n in m[1].get("nodes", []))
         if (must_run and must_run in cached) or (cached and set(workflow.keys()) <= cached):
-            raise ComfyError("ComfyUI genbrugte et gemt resultat i stedet for at regne billedet. "
-                             "Fjern --cache-lru/--cache-ram fra startkommandoen.")
+            raise ComfyError("ComfyUI reused a cached result instead of calculating the image. "
+                             "Remove --cache-lru/--cache-ram from the start command.")
         im = _pick_image(entry, workflow)
         if not im:
-            raise ComfyError("Workflowet gav intet billede")
+            raise ComfyError("The workflow produced no image")
         q = urllib.parse.urlencode({"filename": im["filename"], "subfolder": im.get("subfolder", ""),
                                     "type": im.get("type", "output")})
         return self._req(f"/view?{q}", timeout=60), elapsed
 
 
 class FakeComfy:
-    """Simuleret ComfyUI: ca. 2 s per billede, påvirket af den simulerede GPU."""
+    """Simulated ComfyUI: about 2 s per image, affected by the simulated GPU."""
 
     def __init__(self, gpu, system):
         self.gpu = gpu

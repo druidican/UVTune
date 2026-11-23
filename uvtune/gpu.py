@@ -1,7 +1,7 @@
-"""Adgang til amdgpu via sysfs: sensorer, voltage offset og power limit.
+"""Access to amdgpu via sysfs: sensors, voltage offset and power limit.
 
-Skrivning kræver root og at overdrive er slået til
-(amdgpu.ppfeaturemask med bit 0x4000, fx via LACT's "Enable overclocking").
+Writing requires root and overdrive to be enabled
+(amdgpu.ppfeaturemask with bit 0x4000, e.g. via LACT's "Enable overclocking").
 """
 import glob
 import math
@@ -53,7 +53,7 @@ class AmdGpu:
         self.dev = self._find(sysfs)
         hw = sorted(glob.glob(os.path.join(self.dev, "hwmon", "hwmon*")))
         if not hw:
-            raise GPUError("Fandt ikke hwmon-sensorer for grafikkortet")
+            raise GPUError("Could not find hwmon sensors for the graphics card")
         self.hwmon = hw[0]
         self.name = _read(os.path.join(self.dev, "product_name")) or \
             f"AMD GPU {_read(os.path.join(self.dev, 'device'), '?')}"
@@ -72,7 +72,7 @@ class AmdGpu:
             if vram > best_vram:
                 best, best_vram = dev, vram
         if not best:
-            raise GPUError("Fandt intet AMD-grafikkort")
+            raise GPUError("No AMD graphics card found")
         return best
 
     def _scan_sensors(self):
@@ -110,7 +110,7 @@ class AmdGpu:
             out[key] = round(v * scale, 2) if v is not None else None
         return out
 
-    # --- overdrive / spænding ---
+    # --- overdrive / voltage ---
     @property
     def od_path(self):
         return os.path.join(self.dev, OD_FILE)
@@ -129,7 +129,7 @@ class AmdGpu:
         self._od_write("c")
         cur = self.od_info().get("vo_current")
         if cur is not None and cur != int(mv):
-            raise GPUError(f"Kortet accepterede ikke {mv} mV (viser {cur} mV)")
+            raise GPUError(f"The card did not accept {mv} mV (shows {cur} mV)")
 
     def reset_od(self):
         self._od_write("r")
@@ -157,11 +157,11 @@ class AmdGpu:
 
 
 class FakeGpu:
-    """Simuleret kort til demo og test (UVTUNE_FAKE=1)."""
+    """Simulated card for demo and testing (UVTUNE_FAKE=1)."""
     fake = True
 
     def __init__(self):
-        self.name = "Simuleret RX 9070 XT"
+        self.name = "Simulated RX 9070 XT"
         self.offset = 0
         self.cap = 304.0
         self.dev = "/fake"
@@ -196,7 +196,7 @@ class FakeGpu:
     def reset_power_cap(self):
         self.cap = 304.0
 
-    # simuleret ustabilitet: lavere power limit tåler lidt mere undervolt
+    # simulated instability: a lower power limit tolerates a bit more undervolt
     def failure_mode(self):
         slack = (304 - min(self.cap, 304)) * 0.15
         if self.offset < -115 - slack:

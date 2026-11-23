@@ -1,4 +1,4 @@
-"""Systemting: boot-id, kernel-log, LACT, watchdog, genstart."""
+"""System helpers: boot id, kernel log, LACT, watchdog, reboot."""
 import os
 import re
 import subprocess
@@ -69,7 +69,7 @@ class RealSystem:
         os.sync()
         self.run("systemctl", "poweroff")
 
-    # --- auto-genstart ved frys ---
+    # --- automatic reboot on freeze ---
     def read_sysctl(self, name):
         try:
             with open(f"/proc/sys/{name.replace('.', '/')}") as f:
@@ -87,7 +87,7 @@ class RealSystem:
 
 
 class Watchdog:
-    """Holder hardware-watchdoggen i live. Fryser kernen helt, genstarter bundkortet maskinen."""
+    """Keeps the hardware watchdog alive. If the kernel freezes completely, the motherboard reboots the machine."""
 
     def __init__(self, log):
         self.log = log
@@ -99,10 +99,10 @@ class Watchdog:
         try:
             self.fd = os.open("/dev/watchdog", os.O_WRONLY)
         except OSError as e:
-            self.log("warn", f"Hardware-watchdog ikke tilgængelig ({e}). Ved total frys skal du selv trykke reset.")
+            self.log("warn", f"Hardware watchdog not available ({e}). After a total freeze you have to press reset yourself.")
             return False
         threading.Thread(target=self._pet, daemon=True).start()
-        self.log("info", "Hardware-watchdog aktiv: maskinen genstarter selv, hvis den fryser helt.")
+        self.log("info", "Hardware watchdog active: the machine reboots by itself if it freezes completely.")
         return True
 
     def _pet(self):
@@ -117,7 +117,7 @@ class Watchdog:
         self._stop.set()
         if self.fd is not None:
             try:
-                os.write(self.fd, b"V")  # magic close: slå watchdog fra
+                os.write(self.fd, b"V")  # magic close: turn the watchdog off
                 os.close(self.fd)
             except OSError:
                 pass

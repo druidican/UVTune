@@ -1,5 +1,5 @@
-"""Læser amd-smi (følger med ROCm). Output vises generisk, så det tåler formatændringer
-mellem ROCm-versioner."""
+"""Reads amd-smi (ships with ROCm). Output is shown generically, so it tolerates format changes
+between ROCm versions."""
 import json
 import os
 import random
@@ -24,29 +24,29 @@ def binary():
 
 
 def run(*args, timeout=20):
-    """Returnerer (data, fejltekst). data er JSON hvis muligt, ellers rå tekst."""
+    """Returns (data, error_text). data is JSON if possible, otherwise raw text."""
     if os.environ.get("UVTUNE_FAKE"):
         return _fake(args[0] if args else ""), None
     b = binary()
     if not b:
-        return None, ("amd-smi blev ikke fundet. Det følger med ROCm; installér det med "
+        return None, ("amd-smi was not found. It ships with ROCm; install it with "
                       "'sudo apt install amd-smi-lib'.")
     try:
         r = subprocess.run([b, *args, "--json"], capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
-        return None, f"amd-smi fejlede: {e}"
+        return None, f"amd-smi failed: {e}"
     txt = r.stdout.strip()
     try:
         return json.loads(txt), None
     except ValueError:
-        # nogle versioner skriver advarsler før JSON
+        # some versions print warnings before the JSON
         start = min([i for i in (txt.find("["), txt.find("{")) if i >= 0], default=-1)
         if start >= 0:
             try:
                 return json.loads(txt[start:]), None
             except ValueError:
                 pass
-        return None, (r.stderr.strip() or txt or f"amd-smi returnerede kode {r.returncode}")[:2000]
+        return None, (r.stderr.strip() or txt or f"amd-smi returned code {r.returncode}")[:2000]
 
 
 def _fmt(v):
@@ -59,7 +59,7 @@ def _fmt(v):
 
 
 def sections(data, gpu_index=0):
-    """Gør amd-smi-JSON til {sektion: [(nøgle, værdi), ...]} for ét GPU."""
+    """Turn amd-smi JSON into {section: [(key, value), ...]} for one GPU."""
     if isinstance(data, dict) and "gpu_data" in data:
         data = data["gpu_data"]
     if isinstance(data, list):
@@ -98,9 +98,9 @@ def _flatten(v, prefix, rows):
 
 def _fake(kind):
     if kind == "static":
-        return [{"gpu": 0, "asic": {"market_name": "AMD Radeon RX 9070 XT (simuleret)",
+        return [{"gpu": 0, "asic": {"market_name": "AMD Radeon RX 9070 XT (simulated)",
                                     "target_graphics_version": "gfx1201", "num_compute_units": 64},
-                 "vbios": {"name": "SIMULERET", "version": "113-0000"},
+                 "vbios": {"name": "SIMULATED", "version": "113-0000"},
                  "driver": {"name": "amdgpu", "version": "7.3.0"},
                  "limit": {"max_power": {"value": 304, "unit": "W"},
                            "slowdown_edge_temperature": {"value": 100, "unit": "C"}},

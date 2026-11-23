@@ -1,4 +1,4 @@
-"""Sammenligning af testbilleder mod referencebilledet."""
+"""Comparison of test images against the reference image."""
 import hashlib
 import io
 import math
@@ -16,7 +16,7 @@ def pixel_hash(arr):
 
 
 def psnr(a, b):
-    """Peak signal-to-noise ratio i dB. inf = identiske, < 30 = tydelig forskel."""
+    """Peak signal-to-noise ratio in dB. inf = identical, < 30 = clear difference."""
     if a.shape != b.shape:
         return 0.0
     mse = np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2)

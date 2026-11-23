@@ -1,14 +1,14 @@
-"""Søgelogik: find laveste stabile voltage offset for hvert power limit.
+"""Search logic: find the lowest stable voltage offset for each power limit.
 
-Rækkefølge:
-  baseline – reference på standard (5 min, varmer også kortet op)
-  coarse   – screening, korte tests: 25 mV ned ad gangen til første fejl
-  up       – (kun hvis startpunktet fejler) 25 mV op ad gangen til det holder
-  fine     – screening, korte tests: 5 mV ned mod fejlgrænsen
-  confirm  – længere test fra det mest moddede, der klarede screeningen;
-             fejler det, 5 mV op ad gangen
-  verify   – lang slut-test på bekræftet + sikkerhedsmargin
-Næste power limit starter screeningen ved det forriges bekræftede offset.
+Order:
+  baseline – reference at stock (5 min, also warms the card up)
+  coarse   – screening, short tests: 25 mV down at a time until the first failure
+  up       – (only if the starting point fails) 25 mV up at a time until it holds
+  fine     – screening, short tests: 5 mV down towards the failure limit
+  confirm  – longer test from the most aggressive setting that passed screening;
+             if it fails, 5 mV up at a time
+  verify   – long final test at confirmed + safety margin
+The next power limit starts screening at the previous limit's confirmed offset.
 """
 
 SHORT = ("coarse", "up", "fine")
@@ -46,7 +46,7 @@ class Search:
         ph = d["phase"]
         if ph == "baseline":
             if not passed:
-                d["error"] = "Standardindstillingerne var ikke stabile. Testen stoppes."
+                d["error"] = "Stock settings were not stable. The test is stopped."
                 d["phase"] = "done"
                 return
             d["last_good"] = 0
@@ -85,13 +85,13 @@ class Search:
                 d["phase"] = "verify"
                 d["offset"] = min(0, d["offset"] + d["margin"])
             else:
-                self._step_up("Ingen indstilling klarede bekræftelsen")
+                self._step_up("No setting passed confirmation")
         elif ph == "verify":
             if passed:
-                self._cap_result(d["offset"], "Stabil")
+                self._cap_result(d["offset"], "Stable")
                 self._next_cap()
             else:
-                self._step_up("Verifikation fejlede helt op til 0 mV")
+                self._step_up("Verification failed all the way up to 0 mV")
 
     def _step_up(self, note):
         d = self.d
@@ -105,7 +105,7 @@ class Search:
     def _up(self):
         d = self.d
         if d["offset"] >= 0:
-            self._cap_result(None, "Ustabil allerede ved 0 mV")
+            self._cap_result(None, "Unstable already at 0 mV")
             self._next_cap()
         else:
             d["phase"] = "up"

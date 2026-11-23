@@ -1,18 +1,18 @@
-"""Udvælgelse af de bedste indstillinger blandt de verificerede (stabile) resultater.
+"""Picks the best settings among the verified (stable) results.
 
-1. most_uv  – mest undervoltet: laveste voltage offset, der bestod verifikationen
-2. least    – mindst negativ effekt: laveste strømforbrug, hvor ydelsen højst er
-              'perf_tolerance_pct' under standard (findes ingen, den med mindst tab)
-3. fastest  – bedst positiv effekt: højeste ydelse
+1. most_uv  – most undervolted: the lowest voltage offset that passed verification
+2. least    – least negative impact: the lowest power draw where performance is at most
+              'perf_tolerance_pct' below stock (if none, the one with the smallest loss)
+3. fastest  – best positive impact: the highest performance
 """
 
 PICKS = [
-    ("most_uv", "1. Mest undervoltet, stabil",
-     "Laveste spænding, der bestod den lange verifikation."),
-    ("least", "2. Mindst negativ effekt",
-     "Laveste strømforbrug, hvor ydelsen højst er {tol} % under standard."),
-    ("fastest", "3. Bedst positiv effekt",
-     "Højeste ydelse blandt de stabile indstillinger."),
+    ("most_uv", "1. Most undervolted, stable",
+     "The lowest voltage that passed the long verification."),
+    ("least", "2. Least negative impact",
+     "The lowest power draw where performance is at most {tol} % below stock."),
+    ("fastest", "3. Best positive impact",
+     "The highest performance among the stable settings."),
 ]
 
 
@@ -35,7 +35,7 @@ def recommend(steps, cfg):
             out["least_within_tol"] = True
         else:
             out["least"] = out["fastest"]
-    # bagudkompatibelt navn
+    # backwards-compatible name
     out["best"] = out["least"]
     return out
 
