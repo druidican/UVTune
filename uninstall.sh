@@ -56,7 +56,8 @@ rm -f /etc/systemd/system/multi-user.target.wants/uvtune-worker.service \
 systemctl daemon-reload
 systemctl reset-failed uvtune-worker uvtune-gui 2>/dev/null || true
 rm -rf /opt/uvtune
-rm -f /usr/local/bin/uvtune-gui
+rm -f /usr/local/bin/uvtune-gui /usr/share/icons/hicolor/scalable/apps/uvtune.svg
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t /usr/share/icons/hicolor 2>/dev/null || true
 [[ -n "$USER_HOME" ]] && rm -f "$USER_HOME/.local/share/applications/uvtune.desktop"
 
 if [[ $PURGE -eq 1 && -n "$DATA" ]]; then

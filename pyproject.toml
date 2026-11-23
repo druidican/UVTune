@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "uvtune"
-version = "0.8.0"
-description = "Find laveste stabile undervolt til AMD-grafikkort med ComfyUI som test"
+version = "0.9.0"
+description = "Find the lowest stable undervolt and power limit for AMD GPUs on Linux, using an AI workload as the test"
 requires-python = ">=3.10"
 dependencies = ["nicegui>=2.0", "numpy", "pillow"]
 
@@ -15,3 +15,6 @@ uvtune-gui = "uvtune.gui:main"
 
 [tool.setuptools]
 packages = ["uvtune"]
+
+[tool.setuptools.package-data]
+uvtune = ["workflows/*.json", "icon.svg"]

@@ -12,7 +12,19 @@ def _docs():
 
 DEFAULTS = {
     # ComfyUI (the test instance runs on its own port, so it does not clash with your normal one)
+    # Test load: "comfyui" (a ComfyUI workflow) or "torch" (built-in PyTorch test, no ComfyUI)
+    "load_type": "comfyui",
+    # ComfyUI workflow source: "builtin", "preset:<name>" or "file"
+    "workflow_source": "builtin",
+    "builtin_ckpt": "",
+    "builtin_res": 1024,
+    "builtin_steps": 30,
+    "builtin_hires_steps": 20,
     "workflow_path": "",
+    # Built-in PyTorch test: the Python that has PyTorch with ROCm (found by 'Scan system')
+    "torch_python": "",
+    "torch_env": "",          # extra environment variables, e.g. HSA_OVERRIDE_GFX_VERSION=11.0.0
+    "torch_target_s": 30,     # seconds per result; the load calibrates its size once
     "comfy_cwd": os.path.join(_HOME, "ComfyUI"),
     "comfy_command": "venv/bin/python main.py --listen 127.0.0.1 --port 8189",
     "comfy_port": 8189,

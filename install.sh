@@ -105,9 +105,12 @@ UNIT
   systemctl daemon-reload
   systemctl enable uvtune-gui
   systemctl restart uvtune-gui
-  if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+  if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
     echo "    The ufw firewall is active. Allow access from your local network, e.g.:"
     echo "    sudo ufw allow from 192.168.0.0/16 to any port $PORT proto tcp"
+  elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+    echo "    firewalld is active. If other computers cannot connect, open the port, e.g.:"
+    echo "    sudo firewall-cmd --permanent --add-port=$PORT/tcp && sudo firewall-cmd --reload"
   fi
 elif [[ -f /etc/systemd/system/uvtune-gui.service ]]; then
   echo "==> Turning remote viewing off"
@@ -116,8 +119,10 @@ elif [[ -f /etc/systemd/system/uvtune-gui.service ]]; then
   systemctl daemon-reload
 fi
 
-echo "==> Creating command and menu entry"
+echo "==> Creating command, icon and menu entry"
 ln -sf /opt/uvtune/venv/bin/uvtune-gui /usr/local/bin/uvtune-gui
+install -Dm644 "$SRC/uvtune/icon.svg" /usr/share/icons/hicolor/scalable/apps/uvtune.svg
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t /usr/share/icons/hicolor 2>/dev/null || true
 APPS="$USER_HOME/.local/share/applications"
 sudo -u "$USER_NAME" mkdir -p "$APPS"
 cat > "$APPS/uvtune.desktop" <<DESK
@@ -125,12 +130,17 @@ cat > "$APPS/uvtune.desktop" <<DESK
 Name=UV Tune
 Comment=Find the lowest stable undervolt
 Exec=env UVTUNE_GUI_PORT=$PORT /usr/local/bin/uvtune-gui
-Icon=utilities-system-monitor
+Icon=uvtune
 Terminal=false
 Type=Application
 Categories=System;Utility;
 DESK
 chown "$USER_NAME": "$APPS/uvtune.desktop"
+# refresh the menu (GNOME, KDE Plasma 5/6); harmless if the tools are missing
+command -v update-desktop-database >/dev/null && update-desktop-database -q "$APPS" 2>/dev/null || true
+for k in kbuildsycoca6 kbuildsycoca5; do
+  command -v "$k" >/dev/null && sudo -u "$USER_NAME" "$k" >/dev/null 2>&1 && break
+done || true
 
 echo
 echo "Done. Start the app with:  uvtune-gui   (or find 'UV Tune' in the menu)"

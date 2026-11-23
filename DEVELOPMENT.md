@@ -28,15 +28,16 @@ UVTune runs as two separate processes that only talk through files:
  │  GUI  (uvtune-gui)       │   ~/.local/share/uvtune │  Worker (uvtune-worker)   │
  │  runs as your user       │ ──── command.json ────▶ │  runs as root (systemd)   │
  │  NiceGUI web app         │ ◀─── state.json ─────── │  changes GPU settings     │
- │  port 8090               │ ◀─── runs/<id>/... ──── │  starts test ComfyUI      │
+ │  port 8090               │ ◀─── runs/<id>/... ──── │  starts the test load     │
  └──────────────────────────┘ ◀─── heartbeat.json ── │  survives reboots         │
                                                      └───────────────────────────┘
 ```
 
 - **Worker** (`uvtune/worker.py`): a systemd service running as root, because writing GPU
   overdrive and power limit values in sysfs requires root. It holds all the test logic,
-  starts and stops a dedicated ComfyUI instance (as your user, via `runuser`), checks
-  images, reads the kernel log, reboots after GPU faults, and writes all results.
+  starts and stops the test load (a dedicated ComfyUI instance or the built-in PyTorch load,
+  always as your user, via `runuser`), checks results, reads the kernel log, reboots after
+  GPU faults, and writes all results.
 - **GUI** (`uvtune/gui.py`): a NiceGUI app running as your normal user. It never changes the
   GPU. It writes settings and commands, and reads state and results. It can be closed and
   reopened at any time without affecting a running test.
@@ -54,7 +55,11 @@ environment variable), so the GUI can read them and write commands back.
 | `search.py` | The search algorithm as a small, pure state machine (`Search`). No I/O, so it is easy to test. |
 | `gpu.py` | sysfs access: sensors (hwmon), voltage offset (`pp_od_clk_voltage`), power limit (`power1_cap`). `FakeGpu` for simulation. |
 | `comfy.py` | Starts/stops the test ComfyUI, submits workflows over the HTTP API, fetches the result image. Seed alternation (`seed_variants`). `FakeComfy` for simulation. |
-| `imagecmp.py` | Image decoding, pixel hash and PSNR. |
+| `workflows.py` | The built-in workflow (standard nodes only), presets in `uvtune/workflows/`, checkpoint listing, and `resolve()` which picks the workflow from the settings. |
+| `torchbackend.py` | The built-in PyTorch load: starts `torchload.py` in the user's own Python and talks to it over stdin/stdout JSON lines. `FakeTorch` for simulation. |
+| `torchload.py` | Runs **inside the user's PyTorch environment**, so it imports nothing from UV Tune. Transformer and convolution work in bf16 with fixed weights; returns a float32 fingerprint as `.npy`. |
+| `scan.py` | Finds ROCm, ComfyUI installations and Python environments with PyTorch. Each Python is probed in its own subprocess. Also `install_hint()` for distribution-specific package names. |
+| `imagecmp.py` | Decoding of PNG images and `.npy` arrays, hash and PSNR (works for both). |
 | `system.py` | boot id, kernel log via `journalctl`, LACT service control, sysctls, reboot/poweroff, hardware watchdog. `FakeSystem` for simulation. |
 | `reco.py` | Picks the three recommendations from the verified steps (`PICKS`, `recommend`). |
 | `report.py` | Builds the HTML report (with dependency-free SVG charts) and the CSV. |
@@ -67,9 +72,9 @@ Outside the package:
 
 | File | What it does |
 |---|---|
-| `install.sh` | Creates `/opt/uvtune/venv`, installs the package, creates the `uvtune-worker` service and, with `--remote`, the `uvtune-gui` service. |
+| `install.sh` | Creates `/opt/uvtune/venv`, installs the package, creates the `uvtune-worker` service and, with `--remote`, the `uvtune-gui` service. Installs `uvtune/icon.svg` as the `uvtune` icon in the hicolor theme. |
 | `uninstall.sh` | Stops everything safely, resets the card if needed, removes services and files. `--purge` also deletes data. |
-| `workflows/` | Example ComfyUI workflow in API format. |
+| `uvtune/workflows/` | Preset ComfyUI workflows in API format (listed in `workflows.PRESETS`). |
 
 ## Data directory and file formats
 
@@ -85,7 +90,7 @@ Default location: `~/.local/share/uvtune/` (override with `UVTUNE_DATA`).
 | `runs/<run_id>/steps.jsonl` | Worker | One JSON line per finished step (see below). |
 | `runs/<run_id>/events.jsonl` | Worker | Log messages shown in the Events tab. |
 | `runs/<run_id>/samples_NNN.jsonl` | Worker | Sensor samples for step NNN, one per second. |
-| `runs/<run_id>/images/` | Worker | `reference.png`, `reference_1.png` (one per seed) and `stepNNN_bad.png` for failures. |
+| `runs/<run_id>/images/` | Worker | `reference.png`/`.npy`, `reference_1.png`/`.npy` (one per seed) and `stepNNN_bad.png`/`.npy` for failures. `.npy` is used by the PyTorch load. |
 | `runs/<run_id>/kernel_stepNNN.log` | Worker | Kernel log lines for GPU failures and freezes. |
 | `runs/<run_id>/report.html`, `steps.csv` | Worker / GUI | The report. |
 
@@ -125,8 +130,9 @@ Default location: `~/.local/share/uvtune/` (override with `UVTUNE_DATA`).
       calls can hang on a broken GPU).
    2. Saves `status = "running"` and the current boot id **before** anything risky happens.
    3. Starts the sensor sampler thread.
-   4. Generates images in a loop, alternating seed A and B, until the step's duration is up.
-      Every image is compared with the reference for its seed. While waiting for each image,
+   4. Generates results in a loop, alternating seed A and B, until the step's duration is up.
+      Every result is compared with the reference for its seed. (The PyTorch load sizes
+      itself once, during the first step, and stores the step count in `torch_steps`.) While waiting for each image,
       it checks the kernel log every 5 s and checks for an abort command.
    5. Computes statistics, appends to `steps.jsonl`, and feeds pass/fail into `Search.record`.
 4. **The search** (`search.py`) decides the next step: `baseline` → `coarse` → (`up`) →
@@ -184,8 +190,8 @@ python -m uvtune.worker &          # terminal 1 (or in the background)
 python -m uvtune.gui               # opens http://127.0.0.1:8090
 ```
 
-In simulation mode, start a test from the GUI as usual, with any API-format workflow that has
-a sampler with a seed (for example the one in `workflows/`). Set short durations such as
+In simulation mode, start a test from the GUI as usual. Both test loads work: the
+simulated ComfyUI accepts any workflow, and the simulated PyTorch load needs no Python path. Set short durations such as
 `0.1` minutes for warm-up and screening to get through a whole run in a few minutes.
 
 You can also start a run without the GUI:
@@ -195,7 +201,7 @@ python - <<'EOF'
 import json
 cfg = {"power_caps_pct": "100, 85", "warmup_minutes": 0.1, "screen_minutes": 0.1,
        "confirm_minutes": 0.15, "verify_minutes": 0.2, "report_dir": "/tmp/uvd/reports"}
-wf = json.load(open("workflows/UVTune_Test_Workflow_API.json"))
+wf = json.load(open("uvtune/workflows/anima_int8.json"))
 json.dump({"action": "start", "config": cfg, "workflow": wf}, open("/tmp/uvd/command.json", "w"))
 EOF
 ```
@@ -246,11 +252,21 @@ A new phase needs a name in `PHASE_MINUTES` and `PHASE_NAMES` (`worker.py`) and 
 **Change the recommendations:** edit `PICKS` and `recommend()` in `reco.py`. The GUI,
 remote page and report all use them, so new picks show up everywhere.
 
-**Use a different load instead of ComfyUI:** write a class with the same methods as
-`ComfyServer`: `start()` (return `True` if it started a fresh process), `stop()`,
-`alive()` and `run_once(workflow, timeout, poll_cb, must_run=None)`, which returns
-`(png_bytes, seconds)`. It must return the same image every time for the same input.
-Choose it in `Worker.prepare`. `FakeComfy` is a minimal example.
+**Add another test load:** write a class with the same methods as `ComfyServer`:
+`start()` (return `True` if it started a fresh process), `stop()`, `alive()` and
+`run_once(workload, timeout, poll_cb, must_run=None)`, which returns `(bytes, seconds)`.
+The bytes can be a PNG image or a `.npy` array; `imagecmp` handles both. It must return the
+same result every time for the same input. Choose it in `Worker.prepare` with a new
+`load_type`. `TorchBackend` is a complete example and `FakeComfy` a minimal one.
+
+**Change the PyTorch load:** the model sizes are the constants at the top of
+`torchload.py` (`B, T, D, H, L` for the transformer, `C, R, NCONV` for the convolutions).
+Keep everything deterministic: fixed weights from a CPU generator, seeded inputs, no
+random dropout. You can try it without UV Tune:
+`printf '{"cmd":"run","seed":1,"steps":4}\n' | UVTUNE_TORCH_DEVICE=cpu UVTUNE_TORCH_SMALL=1 python3 uvtune/torchload.py`
+
+**Add a workflow preset:** put an API-format workflow in `uvtune/workflows/` and add it to
+`PRESETS` in `workflows.py`. It needs a fixed seed on its first sampler.
 
 **Support another GPU or driver:** `gpu.py` assumes amdgpu sysfs. The voltage offset is set
 with the `vo <mV>` and `c` commands on `pp_od_clk_voltage`, which RDNA3 and RDNA4 both

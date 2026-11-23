@@ -18,7 +18,8 @@ from .comfy import (ComfyError, ComfyServer, ComfyTimeout, FakeComfy, WaitInterr
                     seed_variants, validate_workflow)
 from .config import merged, parse_caps
 from .gpu import open_gpu
-from .imagecmp import decode, fmt_psnr, pixel_hash, psnr
+from .imagecmp import decode, ext, fmt_psnr, pixel_hash, psnr
+from .torchbackend import FakeTorch, TorchBackend
 from . import report
 from .reco import recommend
 from .search import Search
@@ -220,9 +221,16 @@ class Worker:
             self.event(st, "error", msg)
             self.save(st)
             return st
-        err = validate_workflow(wf)
-        if err:
-            return fail(err)
+        if cfg.get("load_type") == "torch":
+            py = cfg.get("torch_python", "")
+            if not FAKE and not (py and os.path.isfile(py)):
+                return fail("Choose a Python environment with PyTorch (ROCm) for the built-in test "
+                            "(use 'Scan system' in Setup).")
+            wf = {"type": "torch"}
+        else:
+            err = validate_workflow(wf)
+            if err:
+                return fail(err)
         if os.geteuid() != 0 and not FAKE:
             return fail("The worker is not running as root and cannot change the card's settings.")
         od = self.gpu.od_info()
@@ -279,6 +287,20 @@ class Worker:
             self.watchdog = Watchdog(lambda lvl, m: self.event(st, lvl, m))
             self.watchdog.start()
         self.workflow = S.read_json(S.Path(st["run_dir"]) / "workflow.json")
+        run_dir = S.Path(st["run_dir"])
+        logf = lambda lvl, m: self.event(st, lvl, m)  # noqa: E731
+        if cfg.get("load_type") == "torch":
+            self.comfy = FakeTorch(self.gpu, self.sys) if FAKE else \
+                TorchBackend(cfg, S.OWNER, run_dir / "load.log", logf)
+            self.must_run = None
+            self._torch_variants(st)
+            if not st.get("variant_note"):
+                st["variant_note"] = ("Built-in PyTorch load: transformer and convolution work in bf16, "
+                                      "alternating between two fixed seeds.")
+                self.event(st, "info", st["variant_note"])
+            self.save(st)
+            self.prepared = True
+            return
         a, b, sampler, desc = seed_variants(self.workflow)
         if a is not None:
             self.variants, self.must_run = [a, b], sampler
@@ -295,10 +317,13 @@ class Worker:
         if FAKE:
             self.comfy = FakeComfy(self.gpu, self.sys)
         else:
-            self.comfy = ComfyServer(cfg, S.OWNER, S.Path(st["run_dir"]) / "comfyui.log",
-                                     lambda lvl, m: self.event(st, lvl, m))
+            self.comfy = ComfyServer(cfg, S.OWNER, run_dir / "comfyui.log", logf)
         self.save(st)
         self.prepared = True
+
+    def _torch_variants(self, st):
+        steps = st.get("torch_steps") or 0
+        self.variants = [{"seed": 1001, "steps": steps}, {"seed": 1002, "steps": steps}]
 
     def continue_run(self, st):
         cfg = st["cfg"]
@@ -403,6 +428,14 @@ class Worker:
             fresh = False
             try:
                 fresh = bool(self.comfy.start())
+                if st["cfg"].get("load_type") == "torch" and not st.get("torch_steps"):
+                    # size the work once, at stock settings, so one result takes about target_s
+                    target = float(st["cfg"].get("torch_target_s", 30))
+                    st["torch_steps"] = self.comfy.calibrate(target)
+                    self._torch_variants(st)
+                    self.event(st, "info", f"PyTorch load calibrated: {st['torch_steps']} steps "
+                                           f"per result (about {target:g} s).")
+                    self.save(st)
             except ComfyError as e:
                 fail = ("comfyui_error", str(e))
             ref = st.get("ref") or {}
@@ -527,7 +560,7 @@ class Worker:
         if key not in refs:
             if phase != "baseline":
                 raise RuntimeError("Missing reference image for seed variant " + key)
-            name = "reference.png" if vi == 0 else f"reference_{vi}.png"
+            name = ("reference" if vi == 0 else f"reference_{vi}") + ext(data)
             S.write_bytes(img_dir / name, data)
             refs[key] = {"hash": pixel_hash(arr), "file": str(img_dir / name)}
             ref.setdefault("file", refs[key]["file"])
@@ -538,12 +571,12 @@ class Worker:
             ref["baseline_psnrs"].append(p)
             if p < 15:
                 ref["bad_ref"] = refs[key]["file"]
-                S.write_bytes(img_dir / f"step{n:03d}_baseline_diff.png", data)
+                S.write_bytes(img_dir / f"step{n:03d}_baseline_diff{ext(data)}", data)
                 return False, p
             return True, p
         good = p == math.inf if ref["mode"] == "exact" else p >= ref["threshold"]
         if not good:
-            S.write_bytes(img_dir / f"step{n:03d}_bad.png", data)
+            S.write_bytes(img_dir / f"step{n:03d}_bad{ext(data)}", data)
             st["current"]["bad_ref"] = refs[key]["file"]
         return good, p
 
@@ -587,11 +620,11 @@ class Worker:
             ps = ref.get("baseline_psnrs", [])
             if all(p == math.inf for p in ps):
                 ref["mode"], ref["threshold"] = "exact", None
-                note = "The images are bit-identical. Any difference counts as a failure."
+                note = "Results at stock are bit-identical. Any difference counts as a failure."
             else:
                 ref["mode"] = "psnr"
                 ref["threshold"] = round(max(20.0, min(ps) - 3.0), 2)
-                note = (f"The images vary slightly even at stock (lowest {min(ps):.1f} dB). "
+                note = (f"Results vary slightly even at stock (lowest {min(ps):.1f} dB). "
                         f"Failure threshold: below {ref['threshold']} dB.")
             ref["sec_per_img"] = result.get("sec_per_img")
             self.event(st, "info", note)

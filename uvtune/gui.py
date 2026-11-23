@@ -16,11 +16,11 @@ from . import storage as S
 from .comfy import seed_variants, validate_workflow
 from .config import DEFAULTS, merged, parse_caps
 from .imagecmp import fmt_psnr
-from . import amdsmi, report
+from . import amdsmi, report, scan, workflows
 from .reco import PICKS, delta, recommend
 
 REASONS = {"mismatch": "Wrong image (calculation error)", "gpu_reset": "GPU reset / driver error",
-           "timeout": "Hang (timeout)", "comfyui_error": "ComfyUI error",
+           "timeout": "Hang (timeout)", "comfyui_error": "Test load error",
            "freeze": "Freeze or reboot"}
 PHASES = {"baseline": "Reference", "warmup": "Warm-up", "coarse": "Screening (coarse)",
           "up": "Screening (up)", "fine": "Screening (fine)", "confirm": "Confirmation",
@@ -106,42 +106,63 @@ def run_checks(cfg):
     except Exception as e:  # noqa: BLE001
         out.append(("err", f"Could not read the graphics card: {e}"))
 
-    wp = cfg["workflow_path"]
-    if not wp or not os.path.isfile(wp):
-        out.append(("err", "Choose or upload your workflow (API format)."))
+    if cfg.get("load_type") == "torch":
+        py = cfg.get("torch_python", "")
+        if os.environ.get("UVTUNE_FAKE") and not py:
+            out.append(("warn", "Simulation: no PyTorch Python needed."))
+        elif not py or not os.path.isfile(py):
+            out.append(("err", "Choose a Python with PyTorch (ROCm) for the built-in test. "
+                               "Click 'Scan system' to find one."))
+        else:
+            info = scan.probe(py)
+            if info["usable"]:
+                out.append(("ok", f"PyTorch {info['torch']} with HIP {info['hip']} on {info.get('device')}"))
+            elif info.get("error"):
+                out.append(("err", f"PyTorch could not be loaded from {py}: {info['error']}"))
+            elif not info.get("hip"):
+                out.append(("err", f"PyTorch in {py} is not a ROCm build (version {info.get('torch')})."))
+            else:
+                out.append(("err", f"PyTorch in {py} sees no GPU. Check ROCm, or set an override "
+                                   "in 'Extra environment variables'."))
     else:
-        try:
-            wf = json.load(open(wp))
+        wf, err = workflows.resolve(cfg)
+        if err:
+            out.append(("err", err))
+        else:
             err = validate_workflow(wf)
             out.append(("err", err) if err else ("ok", f"Workflow OK ({len(wf)} nodes)"))
             if not err:
                 a, _, _, desc = seed_variants(wf)
                 out.append(("ok", desc) if a is not None else ("warn", desc))
-        except ValueError:
-            out.append(("err", "The workflow file is not valid JSON."))
-    if not os.path.isdir(cfg["comfy_cwd"]):
-        out.append(("err", f"The ComfyUI folder does not exist: {cfg['comfy_cwd']}"))
-    else:
-        out.append(("ok", "ComfyUI folder found"))
-    cmd = cfg["comfy_command"]
-    args = cmd.split()
-    if "--cache-none" in args:
-        out.append(("warn", "--cache-none is no longer needed and makes the test much slower "
-                            "(all models are reloaded for every image). It is removed automatically "
-                            "when the workflow has a fixed seed."))
-    if "--cache-lru" in args or "--cache-ram" in args:
-        out.append(("warn", "Remove --cache-lru/--cache-ram: with them, ComfyUI can reuse images instead of calculating them."))
-    if "--listen" in args and "0.0.0.0" in args:
-        out.append(("warn", "The test instance listens on the whole network (--listen 0.0.0.0). "
-                            "Use --listen 127.0.0.1; it only needs to be reachable locally."))
-    if f"--port {int(cfg['comfy_port'])}" not in cmd:
-        out.append(("warn", f"The command should contain --port {int(cfg['comfy_port'])}."))
-    try:
-        import urllib.request
-        urllib.request.urlopen(f"http://127.0.0.1:{int(cfg['comfy_port'])}/system_stats", timeout=2)
-        out.append(("warn", f"Something is already running on port {cfg['comfy_port']}. Close it before starting."))
-    except Exception:  # noqa: BLE001
-        pass
+            if cfg.get("workflow_source") == "builtin":
+                ck = os.path.join(cfg["comfy_cwd"], "models", "checkpoints", cfg.get("builtin_ckpt") or "")
+                if cfg.get("builtin_ckpt") and not os.path.isfile(ck):
+                    out.append(("warn", f"Checkpoint not found in the ComfyUI folder: {cfg['builtin_ckpt']}"))
+        if not os.path.isdir(cfg["comfy_cwd"]):
+            out.append(("err", f"The ComfyUI folder does not exist: {cfg['comfy_cwd']}"))
+        else:
+            out.append(("ok", "ComfyUI folder found"))
+        cmd = cfg["comfy_command"]
+        args = cmd.split()
+        if "--cache-none" in args:
+            out.append(("warn", "--cache-none is no longer needed and makes the test much slower "
+                                "(all models are reloaded for every image). It is removed automatically "
+                                "when the workflow has a fixed seed."))
+        if "--cache-lru" in args or "--cache-ram" in args:
+            out.append(("warn", "Remove --cache-lru/--cache-ram: with them, ComfyUI can reuse images "
+                                "instead of calculating them."))
+        if "--listen" in args and "0.0.0.0" in args:
+            out.append(("warn", "The test instance listens on the whole network (--listen 0.0.0.0). "
+                                "Use --listen 127.0.0.1; it only needs to be reachable locally."))
+        if f"--port {int(cfg['comfy_port'])}" not in cmd:
+            out.append(("warn", f"The command should contain --port {int(cfg['comfy_port'])}."))
+        try:
+            import urllib.request
+            urllib.request.urlopen(f"http://127.0.0.1:{int(cfg['comfy_port'])}/system_stats", timeout=2)
+            out.append(("warn", f"Something is already running on port {cfg['comfy_port']}. "
+                                "Close it before starting."))
+        except Exception:  # noqa: BLE001
+            pass
     out.append(("warn", "Close your normal ComfyUI, other GPU programs (such as Ollama) and games before "
                         "starting, so they do not use the GPU at the same time. Pausing cloud sync tools is a good idea."))
     return out
@@ -355,32 +376,150 @@ def index(request: Request):
                     ui.label('You are viewing UV Tune from another computer. Setup and starting a test are only possible on the test machine itself.')
             else:
                 with ui.row().classes("w-full gap-6 items-start"):
-                    with ui.card().classes("w-[44rem]"):
-                        ui.label("ComfyUI test").classes("text-h6")
-                        wf_input = ui.input("Workflow (API format JSON)").bind_value(cfg, "workflow_path") \
-                            .classes("w-full")
+                    with ui.column().classes("w-[44rem] gap-4"):
+                        with ui.card().classes("w-full"):
+                            with ui.row().classes("w-full items-center justify-between"):
+                                ui.label("System scan").classes("text-h6")
+                                scan_btn = ui.button("Scan system", icon="search").props("outline")
+                            ui.label("Looks for ROCm, ComfyUI installations and Python environments with "
+                                     "PyTorch. Nothing changes until you click 'Use'.").classes("text-caption")
+                            scan_box = ui.column().classes("w-full")
 
-                        async def on_upload(e):
-                            data = await e.file.read()
-                            dest = S.DATA / "workflow_api.json"
-                            S.write_bytes(dest, data)
-                            cfg["workflow_path"] = str(dest)
-                            wf_input.value = str(dest)
-                            try:
-                                err = validate_workflow(json.loads(data))
-                            except ValueError:
-                                err = "Not valid JSON"
-                            ui.notify(err or "Workflow uploaded", type="negative" if err else "positive")
-                        ui.upload(label="…or upload the workflow file", on_upload=on_upload,
-                                  auto_upload=True).props("accept=.json").classes("w-full")
-                        ui.input("ComfyUI folder").bind_value(cfg, "comfy_cwd").classes("w-full")
-                        ui.textarea("Start command (run in the folder as your user)") \
-                            .bind_value(cfg, "comfy_command").classes("w-full").props("autogrow")
-                        ui.number("Port for the test instance", format="%d").bind_value(cfg, "comfy_port")
-                        ui.markdown("Use the same command as in your start script, but with "
-                                    "`--listen 127.0.0.1 --port 8189` and without `--cache-none`. If your script sets "
-                                    "environment variables, put them in front, e.g. `HSA_XYZ=1 venv/bin/python …`.") \
-                            .classes("text-caption")
+                        with ui.card().classes("w-full"):
+                            ui.label("Test load").classes("text-h6")
+                            ui.toggle({"comfyui": "ComfyUI workflow", "torch": "Built-in PyTorch test"}) \
+                                .bind_value(cfg, "load_type")
+
+                            with ui.column().classes("w-full") as comfy_box:
+                                ui.input("ComfyUI folder").bind_value(cfg, "comfy_cwd").classes("w-full")
+                                ui.textarea("Start command (run in the folder as your user)") \
+                                    .bind_value(cfg, "comfy_command").classes("w-full").props("autogrow")
+                                ui.number("Port for the test instance", format="%d").bind_value(cfg, "comfy_port")
+                                ui.markdown("Use the same command as in your start script, but with "
+                                            "`--listen 127.0.0.1 --port 8189` and without `--cache-none`. If your "
+                                            "script sets environment variables, put them in front, e.g. "
+                                            "`HSA_XYZ=1 venv/bin/python …`.").classes("text-caption")
+                                if cfg.get("workflow_source") not in workflows.SOURCES:
+                                    cfg["workflow_source"] = "builtin"
+                                ui.select(workflows.SOURCES, label="Workflow") \
+                                    .bind_value(cfg, "workflow_source").classes("w-full")
+
+                                with ui.column().classes("w-full") as builtin_box:
+                                    with ui.row().classes("w-full items-end no-wrap"):
+                                        ckpt_sel = ui.select([cfg["builtin_ckpt"]] if cfg.get("builtin_ckpt") else [],
+                                                             label="Checkpoint (models/checkpoints)",
+                                                             with_input=True) \
+                                            .bind_value(cfg, "builtin_ckpt").classes("flex-grow")
+                                        ckpt_btn = ui.button(icon="refresh").props("flat")
+                                    with ui.row().classes("w-full"):
+                                        if int(cfg.get("builtin_res") or 1024) not in (512, 768, 1024):
+                                            cfg["builtin_res"] = 1024
+                                        ui.select({512: "512 (SD 1.5)", 768: "768", 1024: "1024 (SDXL and newer)"},
+                                                  label="Resolution").bind_value(cfg, "builtin_res").classes("w-56")
+                                        ui.number("Base steps", min=5, max=150).bind_value(cfg, "builtin_steps") \
+                                            .classes("w-32")
+                                        ui.number("Hires steps", min=4, max=100) \
+                                            .bind_value(cfg, "builtin_hires_steps").classes("w-32")
+                                    ui.label("Standard ComfyUI nodes, locked seeds: a base pass and a 1.5x hires "
+                                             "pass. Adjust the steps so one image takes about 20–60 seconds.") \
+                                        .classes("text-caption")
+                                builtin_box.bind_visibility_from(cfg, "workflow_source", value="builtin")
+
+                                with ui.column().classes("w-full") as file_box:
+                                    wf_input = ui.input("Workflow (API format JSON)") \
+                                        .bind_value(cfg, "workflow_path").classes("w-full")
+
+                                    async def on_upload(e):
+                                        data = await e.file.read()
+                                        dest = S.DATA / "workflow_api.json"
+                                        S.write_bytes(dest, data)
+                                        cfg["workflow_path"] = str(dest)
+                                        wf_input.value = str(dest)
+                                        try:
+                                            err = validate_workflow(json.loads(data))
+                                        except ValueError:
+                                            err = "Not valid JSON"
+                                        ui.notify(err or "Workflow uploaded", type="negative" if err else "positive")
+                                    ui.upload(label="…or upload the workflow file", on_upload=on_upload,
+                                              auto_upload=True).props("accept=.json").classes("w-full")
+                                file_box.bind_visibility_from(cfg, "workflow_source", value="file")
+                            comfy_box.bind_visibility_from(cfg, "load_type", value="comfyui")
+
+                            with ui.column().classes("w-full") as torch_box:
+                                ui.input("Python with PyTorch (ROCm)").bind_value(cfg, "torch_python") \
+                                    .classes("w-full")
+                                ui.input("Extra environment variables (optional)",
+                                         placeholder="HSA_OVERRIDE_GFX_VERSION=11.0.0") \
+                                    .bind_value(cfg, "torch_env").classes("w-full")
+                                ui.number("Seconds per result", min=10, max=300).bind_value(cfg, "torch_target_s").classes("w-48")
+                                ui.markdown("Runs AI-style calculations (transformer attention and convolutions "
+                                            "in bf16) in your own PyTorch environment. No ComfyUI or models "
+                                            "needed. Click **Scan system** to find a Python with PyTorch for "
+                                            "ROCm.").classes("text-caption")
+                            torch_box.bind_visibility_from(cfg, "load_type", value="torch")
+
+                    def refresh_ckpts(notify=False):
+                        opts = workflows.list_checkpoints(cfg.get("comfy_cwd"))
+                        cur = cfg.get("builtin_ckpt")
+                        if cur and cur not in opts:
+                            opts = [cur] + opts
+                        ckpt_sel.set_options(opts)
+                        if not cur and opts:
+                            cfg["builtin_ckpt"] = opts[0]
+                        if notify:
+                            ui.notify(f"{len(opts)} checkpoint(s) found" if opts else
+                                      "No checkpoints found in models/checkpoints of the ComfyUI folder",
+                                      type="positive" if opts else "warning")
+                    ckpt_btn.on_click(lambda: refresh_ckpts(True))
+                    refresh_ckpts()
+
+                    async def do_scan():
+                        scan_box.clear()
+                        with scan_box:
+                            ui.spinner()
+                            ui.label("Scanning… (importing PyTorch can take a while)").classes("text-caption")
+                        res = await ng_run.io_bound(scan.scan, None, (cfg.get("comfy_cwd", ""),))
+                        scan_box.clear()
+                        with scan_box:
+                            rv = res["rocm"]["versions"]
+                            ui.label(f"{res['os']['name']} · ROCm: {', '.join(rv) if rv else 'not found in /opt/rocm'}"
+                                     f" · amd-smi: {'yes' if res['rocm']['tools'].get('amd-smi') else 'no'}")
+                            ui.label("ComfyUI").classes("text-subtitle2 q-mt-sm")
+                            if not res["comfyui"]:
+                                ui.label("No ComfyUI installation found. Use the built-in PyTorch test, or "
+                                         "enter the folder by hand.").classes("text-caption")
+                            for c in res["comfyui"]:
+                                with ui.row().classes("w-full items-center no-wrap"):
+                                    ui.label(f"{c['dir']}  ({c['command'].split(' ')[0]})") \
+                                        .classes("text-caption flex-grow")
+
+                                    def use_comfy(c=c):
+                                        cfg.update(comfy_cwd=c["dir"], comfy_command=c["command"],
+                                                   load_type="comfyui")
+                                        refresh_ckpts(True)
+                                    ui.button("Use", on_click=use_comfy).props("flat dense")
+                            ui.label(f"PyTorch ({res['checked']} Python environments checked)") \
+                                .classes("text-subtitle2 q-mt-sm")
+                            if not res["torch"]:
+                                ui.label("No Python with PyTorch found.").classes("text-caption")
+                            for t in res["torch"]:
+                                desc = (f"torch {t['torch']} · " +
+                                        (f"HIP {t['hip']}" if t.get("hip") else "not a ROCm build") + " · " +
+                                        (t.get("device") or "no GPU visible"))
+                                with ui.row().classes("w-full items-center no-wrap"):
+                                    ui.icon("check_circle" if t["usable"] else "block",
+                                            color="positive" if t["usable"] else "grey")
+                                    ui.label(f"{t['path']} – {desc}").classes("text-caption flex-grow")
+                                    if t["usable"]:
+                                        ui.button("Use for built-in test",
+                                                  on_click=lambda t=t: cfg.update(torch_python=t["path"],
+                                                                                  load_type="torch")) \
+                                            .props("flat dense")
+                            if not any(t["usable"] for t in res["torch"]):
+                                ui.markdown("No PyTorch with ROCm was found. Install ComfyUI with ROCm, or create "
+                                            "a Python environment and install the ROCm build of PyTorch "
+                                            "(see the install selector on pytorch.org).").classes("text-caption")
+                    scan_btn.on_click(do_scan)
 
                     with ui.card().classes("w-[30rem]"):
                         ui.label("Test plan").classes("text-h6")
@@ -425,26 +564,31 @@ def index(request: Request):
 
                 check_box = ui.column().classes("w-full q-mt-md")
 
-                def do_check():
+                async def do_check(results=None):
                     save_cfg(cfg)
                     check_box.clear()
+                    if results is None:
+                        with check_box:
+                            ui.spinner()
+                        results = await ng_run.io_bound(run_checks, dict(cfg))
+                        check_box.clear()
                     with check_box:
-                        for lvl, txt in run_checks(cfg):
+                        for lvl, txt in results:
                             icon = {"ok": "check_circle", "warn": "warning", "err": "error"}[lvl]
                             color = {"ok": "positive", "warn": "warning", "err": "negative"}[lvl]
                             with ui.row().classes("items-center"):
                                 ui.icon(icon, color=color)
                                 ui.label(txt)
 
-                def do_start():
+                async def do_start():
                     save_cfg(cfg)
-                    checks = run_checks(cfg)
+                    checks = await ng_run.io_bound(run_checks, dict(cfg))
                     errs = [t for lvl, t in checks if lvl == "err"]
-                    do_check()
+                    await do_check(checks)
                     if errs:
                         ui.notify("Fix the errors first", type="negative")
                         return
-                    wf = json.load(open(cfg["workflow_path"]))
+                    wf = None if cfg.get("load_type") == "torch" else workflows.resolve(cfg)[0]
                     S.write_json(S.COMMAND, {"action": "start", "config": cfg, "workflow": wf})
                     ui.notify("Test started", type="positive")
                     tabs.set_value(t_live)
@@ -894,8 +1038,9 @@ def main():
         ips = [a for a in OWN_ADDRS if a not in ("127.0.0.1", "::1", "localhost") and ":" not in a]
         for ip in ips:
             print(f"Remote view: http://{ip}:{args.port}")
+    icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
     ui.run(title="UV Tune", host=args.host, port=args.port, reload=False,
-           show=not args.no_browser, favicon="⚡")
+           show=not args.no_browser, favicon=icon if os.path.isfile(icon) else "⚡")
 
 
 if __name__ in {"__main__", "__mp_main__"}:

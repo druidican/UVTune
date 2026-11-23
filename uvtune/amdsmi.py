@@ -29,8 +29,9 @@ def run(*args, timeout=20):
         return _fake(args[0] if args else ""), None
     b = binary()
     if not b:
+        from .scan import install_hint
         return None, ("amd-smi was not found. It ships with ROCm; install it with "
-                      "'sudo apt install amd-smi-lib'.")
+                      f"'{install_hint('amd-smi')}'.")
     try:
         r = subprocess.run([b, *args, "--json"], capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:

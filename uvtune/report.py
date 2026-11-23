@@ -11,7 +11,7 @@ from . import storage as S
 from .reco import PICKS, delta, recommend
 
 REASONS = {"mismatch": "Wrong image (calculation error)", "gpu_reset": "GPU reset / driver error",
-           "timeout": "Hang (timeout)", "comfyui_error": "ComfyUI error",
+           "timeout": "Hang (timeout)", "comfyui_error": "Test load error",
            "freeze": "Freeze or reboot"}
 PHASES = {"baseline": "Reference", "warmup": "Warm-up", "coarse": "Screening (coarse)",
           "up": "Screening (up)", "fine": "Screening (fine)", "confirm": "Confirmation",
