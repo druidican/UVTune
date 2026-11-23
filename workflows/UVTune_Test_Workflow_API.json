@@ -1,0 +1,112 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "Anima/furry/NovaFurryAMV60.safetensors",
+      "weight_dtype": "default",
+      "model_type": "anima",
+      "on_the_fly_quantization": false,
+      "enable_convrot": "int8",
+      "lora_mode": "None"
+    },
+    "class_type": "OTUNetLoaderW8A8",
+    "_meta": {"title": "Model (Anima, int8)"}
+  },
+  "2": {
+    "inputs": {
+      "clip_name": "Qwen/qwen_3_06b_base.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {"title": "Text encoder (Qwen 0.6B)"}
+  },
+  "3": {
+    "inputs": {"vae_name": "Qwen/qwen_image_vae.safetensors"},
+    "class_type": "VAELoader",
+    "_meta": {"title": "VAE (Qwen image)"}
+  },
+  "4": {
+    "inputs": {
+      "text": "masterpiece, best quality, absurdres, oil painting, traditional media, classical landscape painting, impasto, visible brushstrokes, rich texture, warm golden hour lighting, atmospheric perspective, rolling green and golden hills, small village in the valley, stone cottages with terracotta roofs, church steeple, winding dirt path, cypress and oak trees, misty mountains in the distance, dramatic clouds, muted earthy tones, fine art, 19th century romanticism",
+      "clip": ["2", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Positive prompt"}
+  },
+  "5": {
+    "inputs": {
+      "text": "worst quality, low quality, blurry, jpeg artifacts, logo, watermark",
+      "clip": ["2", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative prompt"}
+  },
+  "6": {
+    "inputs": {
+      "ResolutionState": "{\"mode\":\"preset\",\"ratio\":\"1:1\",\"w\":1280,\"h\":1280,\"custom_w\":1024,\"custom_h\":1024,\"custom_ratio_w\":4,\"custom_ratio_h\":3,\"snap\":16}"
+    },
+    "class_type": "PixaromaResolution",
+    "_meta": {"title": "Resolution 1280x1280"}
+  },
+  "7": {
+    "inputs": {
+      "seed": 424242,
+      "steps": 40,
+      "cfg": 4,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": ["1", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 2]
+    },
+    "class_type": "KSampler",
+    "_meta": {"title": "Base pass (locked seed 424242)"}
+  },
+  "8": {
+    "inputs": {
+      "upscale_method": "nearest-exact",
+      "scale_by": 1.5,
+      "samples": ["7", 0]
+    },
+    "class_type": "LatentUpscaleBy",
+    "_meta": {"title": "Upscale latent 1.5x"}
+  },
+  "9": {
+    "inputs": {
+      "seed": 777777,
+      "steps": 24,
+      "cfg": 4,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 0.5,
+      "model": ["1", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["8", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": {"title": "Hires pass 1920x1920 (locked seed 777777)"}
+  },
+  "10": {
+    "inputs": {
+      "tile_size": 512,
+      "overlap": 64,
+      "temporal_size": 64,
+      "temporal_overlap": 8,
+      "samples": ["9", 0],
+      "vae": ["3", 0]
+    },
+    "class_type": "VAEDecodeTiled",
+    "_meta": {"title": "VAE decode (tiled)"}
+  },
+  "11": {
+    "inputs": {
+      "filename_prefix": "uvtune/test",
+      "images": ["10", 0]
+    },
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save image"}
+  }
+}
